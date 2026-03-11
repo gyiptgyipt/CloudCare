@@ -1,0 +1,34 @@
+# ./.tmuxinator.yml
+
+name: Zyme's Multi Swarm
+root: ~/
+
+startup_window: Simulation
+startup_pane: 1
+
+windows:
+  - Simulation:
+      root: ~/
+      panes:
+      - clear && source ~/.bashrc; cd /home/zyme/PX4-Autopilot/Tools/simulation/gazebo-classic; ./sitl_multiple_run.sh -n 20
+
+  - QGroundControl:
+      root: ~/
+      panes:
+        - clear; source ~/.bashrc; cd /home/zyme/QGroundControl.AppImage; ./QGroundControl.AppImage
+  - uXRCE-DDS_Sim: 
+      root: ~/
+      panes:
+        - clear; source ~/.bashrc; MicroXRCEAgent udp4 -p 8888 #-m 1024
+  # - sensorCombined: 
+  #     root: ~/
+  #     panes:
+  #       - clear; source ~/.bashrc; sleep 1; ros2 launch px4_ros_com sensor_combined_listener.launch.py
+  # - PositionControl: 
+  #     root: ~/
+  #     panes:
+  #       - clear; source ~/.bashrc; sleep 3; ros2 launch px4_offboard offboard_velocity_control.launch.py
+  # - Visualizer: 
+  #     root: ~/
+  #     panes:
+  #       - clear; source ~/.bashrc; sleep 3;
