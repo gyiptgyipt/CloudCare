@@ -1,0 +1,7 @@
+uav1:
+  name: "Alpha"
+  position: [47.397742, 8.545594, 10]
+
+uav2:
+  name: "Bravo"
+  position: [47.397800, 8.545600, 15]

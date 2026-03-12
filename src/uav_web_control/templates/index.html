@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UAV Web Control</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 20px; }
+      .uav { margin-bottom: 10px; }
+      .status { margin-left: 10px; color: #666; }
+    </style>
+  </head>
+  <body>
+    <h1>UAV Web Control</h1>
+    <div id="uav-list">
+      {% if uavs %}
+        {% for id, info in uavs.items() %}
+          <div class="uav">
+            <strong>{{ info.name or id }}</strong> <small>(id: {{ id }})</small>
+            <button class="fly-btn" data-id="{{ id }}">Fly</button>
+            <button class="arm-btn" data-id="{{ id }}">Arm</button>
+            <span class="status" id="status-{{ id }}">ready</span>
+            <span class="status" id="arm-status-{{ id }}" style="margin-left:8px">idle</span>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p>No UAVs configured. Add entries in `config/uavs.yaml`.</p>
+      {% endif %}
+    </div>
+
+    <script src="/static/main.js"></script>
+  </body>
+</html>
