@@ -122,6 +122,7 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 LOCAL_CONFIG_PATH = Path(__file__).parent / 'config' / 'uavs.yaml'
 # Try to prefer the px4_swarm_controller config if available in the workspace
 PX4_CONFIG_CANDIDATE = Path(__file__).resolve().parents[1] / 'px4_swarm_controller' / 'config' / 'config.yaml'
+PX4_CONFIG_CANDIDATE2 = Path(__file__).resolve().parents[1] / 'px4_swarm_controller' / 'config' / 'drones.yaml'
 
 # Path to last command log produced by controller stub
 LAST_CMD = Path(__file__).parent / 'last_command.json'
@@ -162,8 +163,14 @@ def _uav_index(uav_id):
 def load_uavs():
     # If px4_swarm_controller config exists, use it to build UAV entries
     try:
+        cfg_path = None
         if PX4_CONFIG_CANDIDATE.exists():
-            cfg = yaml.safe_load(PX4_CONFIG_CANDIDATE.read_text()) or {}
+            cfg_path = PX4_CONFIG_CANDIDATE
+        elif PX4_CONFIG_CANDIDATE2.exists():
+            cfg_path = PX4_CONFIG_CANDIDATE2
+
+        if cfg_path is not None:
+            cfg = yaml.safe_load(cfg_path.read_text()) or {}
             uavs = {}
             # initial_positions contains mapping of string id -> { initial_pose: { x, y } }
             initial = cfg.get('initial_positions', {})
@@ -194,10 +201,49 @@ def load_uavs():
     return {}
 
 
+def load_setpoints():
+    """Load setpoints mapping from the preferred config file.
+
+    Returns dict[int] -> list of setpoints (each setpoint is list [x,y,z,(yaw)])
+    """
+    try:
+        cfg_path = None
+        if PX4_CONFIG_CANDIDATE.exists():
+            cfg_path = PX4_CONFIG_CANDIDATE
+        elif 'PX4_CONFIG_CANDIDATE2' in globals() and PX4_CONFIG_CANDIDATE2.exists():
+            cfg_path = PX4_CONFIG_CANDIDATE2
+        else:
+            local_cfg = Path(__file__).parent / 'config' / 'config.yaml'
+            local_uavs = Path(__file__).parent / 'config' / 'uavs.yaml'
+            if local_cfg.exists():
+                cfg_path = local_cfg
+            elif local_uavs.exists():
+                cfg_path = local_uavs
+
+        if cfg_path is None:
+            return {}
+
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        sp = cfg.get('setpoints', {})
+        out = {}
+        for k, v in sp.items():
+            try:
+                out[int(k)] = [list(map(float, s)) for s in v]
+            except Exception:
+                log.exception('invalid setpoint format for %s', k)
+        return out
+    except Exception:
+        log.exception('failed to load setpoints')
+        return {}
+
+
 @app.route('/')
 def index():
     uavs = load_uavs()
-    return render_template('index.html', uavs=uavs)
+    setpoints = load_setpoints()
+    # convert setpoints keys to 'uav{n}' to match uavs keys used in template
+    sp_map = {f'uav{int(k)}': v for k, v in setpoints.items()}
+    return render_template('index.html', uavs=uavs, setpoints=sp_map)
 
 
 @app.route('/fly', methods=['POST'])
@@ -207,7 +253,22 @@ def fly():
     uavs = load_uavs()
     if uav_id not in uavs:
         return jsonify({'status': 'error', 'message': 'unknown uav id'}), 400
+    # default target is the configured initial position (x,y,z)
     target = uavs[uav_id].get('position')
+    # allow selecting a setpoint index from config: data may contain 'index' (0-based) or 'sp_index'
+    sp_index = data.get('index') if data.get('index') is not None else data.get('sp_index')
+    if sp_index is not None:
+        try:
+            si = int(sp_index)
+            setpoints = load_setpoints()
+            idx_num = int(_uav_index(uav_id))
+            if idx_num not in setpoints:
+                return jsonify({'status': 'error', 'message': f'no setpoints for uav {uav_id}'}), 400
+            if si < 0 or si >= len(setpoints[idx_num]):
+                return jsonify({'status': 'error', 'message': f'invalid setpoint index {si} for {uav_id}'}), 400
+            target = setpoints[idx_num][si]
+        except ValueError:
+            return jsonify({'status': 'error', 'message': 'index must be integer'}), 400
     # Normalize the UAV id to a numeric index (uav1 -> 1, px4_1 -> 1)
     idx = _uav_index(uav_id)
 

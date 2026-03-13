@@ -17,6 +17,14 @@
         {% for id, info in uavs.items() %}
           <div class="uav">
             <strong>{{ info.name or id }}</strong> <small>(id: {{ id }})</small>
+            {% set sp_list = setpoints.get(id) if setpoints is defined else None %}
+            {% if sp_list %}
+              <select class="sp-select" data-id="{{ id }}">
+                {% for sp in sp_list %}
+                  <option value="{{ loop.index0 }}">{{ loop.index0 }}: [{{ sp[0] }}, {{ sp[1] }}, {{ sp[2] }}]</option>
+                {% endfor %}
+              </select>
+            {% endif %}
             <button class="fly-btn" data-id="{{ id }}">Fly</button>
             <button class="arm-btn" data-id="{{ id }}">Arm</button>
             <span class="status" id="status-{{ id }}">ready</span>
@@ -24,7 +32,7 @@
           </div>
         {% endfor %}
       {% else %}
-        <p>No UAVs configured. Add entries in `config/uavs.yaml`.</p>
+        <p>No UAVs configured. Add entries in `uav_web_control/config/config.yaml` or in `px4_swarm_controller/config/drones.yaml`.</p>
       {% endif %}
     </div>
 

@@ -3,10 +3,15 @@ document.addEventListener('click', function (e) {
   const id = e.target.dataset.id
   const statusEl = document.getElementById('status-' + id)
   statusEl.textContent = 'sending...'
+  // include selected setpoint index if present
+  const sel = document.querySelector(`.sp-select[data-id="${id}"]`)
+  const body = { id }
+  if (sel) body.index = parseInt(sel.value)
+
   fetch('/fly', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id })
+    body: JSON.stringify(body)
   }).then(r => r.json())
     .then(data => {
       if (data.status === 'ok') {

@@ -11,6 +11,7 @@ import threading
 import yaml
 import math
 import logging
+import time
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -33,15 +34,38 @@ class WebControl(Node):
     def __init__(self):
         super().__init__('web_control')
         pkg_dir = Path(__file__).parent
-        # prefer config/config.yaml to uavs.yaml if present
-        cfg_path = pkg_dir / 'config' / 'config.yaml'
-        if not cfg_path.exists():
-            cfg_path = pkg_dir / 'config' / 'uavs.yaml'
 
-        log.info('Loading control config from %s', cfg_path)
-        cfg = yaml.safe_load(cfg_path.read_text())
+        # Prefer the px4_swarm_controller config if available in the workspace
+        px4_cfg_candidate = Path(__file__).resolve().parents[1] / 'px4_swarm_controller' / 'config' / 'config.yaml'
+        px4_cfg_candidate2 = Path(__file__).resolve().parents[1] / 'px4_swarm_controller' / 'config' / 'drones.yaml'
 
-        self.num_drones = int(cfg.get('num_drones', 0))
+        # local package config (fallback)
+        local_cfg1 = pkg_dir / 'config' / 'config.yaml'
+        local_cfg2 = pkg_dir / 'config' / 'uavs.yaml'
+
+        cfg_path = None
+        if px4_cfg_candidate.exists():
+            cfg_path = px4_cfg_candidate
+        elif px4_cfg_candidate2.exists():
+            cfg_path = px4_cfg_candidate2
+        elif local_cfg1.exists():
+            cfg_path = local_cfg1
+        elif local_cfg2.exists():
+            cfg_path = local_cfg2
+
+        if cfg_path is None:
+            log.warning('No config file found for ros_control; defaulting to zero drones')
+            cfg = {}
+        else:
+            log.info('Loading control config from %s', cfg_path)
+            try:
+                cfg = yaml.safe_load(cfg_path.read_text()) or {}
+            except Exception:
+                log.exception('Failed to parse config at %s', cfg_path)
+                cfg = {}
+
+        # num_drones may be stored under different keys in various config formats
+        self.num_drones = int(cfg.get('num_drones', cfg.get('n_drones', 0)))
 
         # publishing parameters: allow configuration of message rate (Hz)
         # and the initial setpoint time window (seconds) during which we
@@ -66,7 +90,10 @@ class WebControl(Node):
         self.manual_targets = {i: None for i in range(1, self.num_drones + 1)}
         self.manual_target_counters = {i: 0 for i in range(1, self.num_drones + 1)}
         # duration to publish manual target (seconds)
-        self.manual_target_duration_s = float(cfg.get('manual_target_duration_s', 3.0))
+        # use a longer default so PX4 has time to accept the streamed setpoints
+        self.manual_target_duration_s = float(cfg.get('manual_target_duration_s', 8.0))
+        # armed state per drone
+        self.armed = {i: False for i in range(1, self.num_drones + 1)}
         # publishers and subscribers
         self.offboard_pubs = {}
         self.traj_pubs = {}
@@ -75,6 +102,7 @@ class WebControl(Node):
         self.local_subs = {}
 
         # create publishers/subscribers for each drone
+        log.info('Creating publishers/subscribers for %d drones', self.num_drones)
         for i in range(1, self.num_drones + 1):
             self.offboard_pubs[i] = self.create_publisher(OffboardControlMode, f'/px4_{i}/fmu/in/offboard_control_mode', 10)
             self.traj_pubs[i] = self.create_publisher(TrajectorySetpoint, f'/px4_{i}/fmu/in/trajectory_setpoint', 10)
@@ -90,6 +118,7 @@ class WebControl(Node):
             self.local_subs[i] = self.create_subscription(
                 VehicleLocalPosition, f'/px4_{i}/fmu/out/vehicle_local_position', make_cb(i), 10
             )
+            log.info('Created publishers for px4_%d: offboard=%s traj=%s cmd=%s', i, f'/px4_{i}/fmu/in/offboard_control_mode', f'/px4_{i}/fmu/in/trajectory_setpoint', f'/px4_{i}/fmu/in/vehicle_command')
 
         # state for setpoint progression
         self.reached = {i: False for i in range(1, self.num_drones + 1)}
@@ -122,6 +151,13 @@ class WebControl(Node):
                     # decrement counter
                     self.manual_target_counters[i] = max(0, self.manual_target_counters[i] - 1)
                     if self.manual_target_counters[i] == 0:
+                        # persist manual target as the current configured setpoint
+                        mt = self.manual_targets[i]
+                        try:
+                            if self.setpoints and i in self.setpoints and 0 <= self.setpoint_index < len(self.setpoints[i]):
+                                self.setpoints[i][self.setpoint_index] = [float(mt[0]), float(mt[1]), float(mt[2])] + ([float(mt[3])] if len(mt) > 3 else [0.0])
+                        except Exception:
+                            log.exception('failed to persist manual target for %d', i)
                         self.manual_targets[i] = None
                 else:
                     # publish configured setpoint
@@ -208,6 +244,30 @@ class WebControl(Node):
         except Exception:
             raise ValueError('invalid idx for arm')
 
+        # wait briefly for PX4 to subscribe to our topics if needed
+        pub = self.cmd_pubs.get(i)
+        traj_pub = self.traj_pubs.get(i)
+        wait_timeout = 5.0
+        waited = 0.0
+        wait_step = 0.1
+        subs = 0
+        while waited < wait_timeout:
+            try:
+                subs = 0
+                if pub is not None:
+                    subs += int(pub.get_subscription_count())
+                if traj_pub is not None:
+                    subs += int(traj_pub.get_subscription_count())
+            except Exception:
+                subs = 0
+            if subs > 0:
+                break
+            time.sleep(wait_step)
+            waited += wait_step
+
+        if subs == 0:
+            log.warning('No PX4 subscribers detected for px4_%d (waited %.1fs) — arm may fail', i, waited)
+
         counter = 0
         repeat = 5
         while counter < repeat:
@@ -221,12 +281,7 @@ class WebControl(Node):
 
         log.info('arm() sent to %d (repeated %d times)', i, repeat)
         # mark as armed locally (informational)
-        try:
-            self.armed[i] = True
-        except Exception:
-            # initialize armed dict lazily if needed
-            self.armed = {j: False for j in range(1, self.num_drones + 1)}
-            self.armed[i] = True
+        self.armed[i] = True
 
     def offboard(self, idx):
         # set offboard mode
@@ -273,6 +328,10 @@ class WebControl(Node):
                 'cmd_subscribers': int(cmd_count),
                 'traj_subscribers': int(traj_count),
                 'connected': (int(cmd_count) + int(traj_count)) > 0,
+                'armed': bool(self.armed.get(i, False)),
+                'manual_target_active': bool(self.manual_targets.get(i) is not None),
+                'manual_target_cycles': int(self.manual_target_counters.get(i, 0)),
+                'local_position': list(self.local_positions.get(i, [0.0, 0.0, 0.0])),
             }
         return status
 
