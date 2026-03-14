@@ -29,7 +29,7 @@ document.addEventListener('click', function (e) {
   if (!e.target.matches('.arm-btn')) return
   const id = e.target.dataset.id
   const statusEl = document.getElementById('arm-status-' + id)
-  statusEl.textContent = 'sending arm...'
+  statusEl.textContent = 'sending offboard...'
   fetch('/arm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -37,7 +37,55 @@ document.addEventListener('click', function (e) {
   }).then(r => r.json())
     .then(data => {
       if (data.status === 'ok') {
-        statusEl.textContent = 'arm command sent'
+        statusEl.textContent = 'offboard command sent'
+      } else {
+        statusEl.textContent = 'error: ' + (data.message || 'unknown')
+      }
+    }).catch(err => {
+      statusEl.textContent = 'network error'
+      console.error(err)
+    })
+}
+)
+
+/* Disarm handler commented out per request
+document.addEventListener('click', function (e) {
+  if (!e.target.matches('.disarm-btn')) return
+  const id = e.target.dataset.id
+  const statusEl = document.getElementById('disarm-status-' + id)
+  statusEl.textContent = 'sending disarm...'
+  fetch('/disarm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).then(r => r.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        statusEl.textContent = 'disarm command sent'
+      } else {
+        statusEl.textContent = 'error: ' + (data.message || 'unknown')
+      }
+    }).catch(err => {
+      statusEl.textContent = 'network error'
+      console.error(err)
+    })
+}
+)
+*/
+
+document.addEventListener('click', function (e) {
+  if (!e.target.matches('.land-btn')) return
+  const id = e.target.dataset.id
+  const statusEl = document.getElementById('land-status-' + id)
+  statusEl.textContent = 'sending land...'
+  fetch('/land', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).then(r => r.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        statusEl.textContent = 'land command sent'
       } else {
         statusEl.textContent = 'error: ' + (data.message || 'unknown')
       }
@@ -59,10 +107,11 @@ function updateStatusUI(statusData) {
     const armBtn = document.querySelector(`.arm-btn[data-id="${id}"]`)
     const statusEl = document.getElementById('status-' + id)
     const armStatusEl = document.getElementById('arm-status-' + id)
+    // Disarm UI removed: keep original behavior for arm/status
     if (flyBtn) flyBtn.disabled = !connected
     if (armBtn) armBtn.disabled = !connected
     if (statusEl) statusEl.textContent = connected ? 'connected' : 'no node'
-    if (armStatusEl && armStatusEl.textContent === 'idle') armStatusEl.textContent = connected ? 'idle' : 'no node'
+    if (armStatusEl) armStatusEl.textContent = info.armed ? 'armed' : (connected ? 'idle' : 'no node')
   })
 }
 

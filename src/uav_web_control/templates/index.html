@@ -3,33 +3,84 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>UAV Web Control</title>
+    <title>Cloud Care</title>
     <style>
-      body { font-family: Arial, sans-serif; padding: 20px; }
-      .uav { margin-bottom: 10px; }
-      .status { margin-left: 10px; color: #666; }
+      :root{
+        --bg:#12121a;
+        --card:#201f2b;
+        --accent:#8b5cf6;
+        --muted:#9aa0b4;
+        --text:#e6e7ee;
+      }
+      html,body{height:100%;}
+      body { font-family: Inter, Arial, sans-serif; padding: 18px; margin:0; background:var(--bg); color:var(--text)}
+      .app-header{display:flex;align-items:center;justify-content:center;gap:12px;margin:0 0 28px 0;padding:8px 12px}
+      .brand-logo{width:100px;height:100px;object-fit:contain;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.35)}
+      h1{margin:0;font-size:20px;text-align:center}
+      /* Force a 5 columns x 4 rows layout; if more cards exist the container scrolls */
+      .grid-container{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;max-height:calc((180px * 4) + (12px * 3));overflow:auto}
+      .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.03);padding:12px;border-radius:8px;box-shadow:0 6px 10px rgba(0,0,0,0.4);min-height:160px}
+      .card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+      .card-title{font-weight:600}
+      .card-sub{font-size:12px;color:var(--muted)}
+      .card-body{display:flex;flex-direction:column;gap:8px}
+      select.sp-select{width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:var(--card);color:var(--text);-webkit-appearance:none;-moz-appearance:none;appearance:none;outline:none}
+      select.sp-select option{background:var(--card);color:var(--text)}
+      /* Remove white native dropdown background on some platforms */
+      select.sp-select::-ms-expand{display:none}
+      .controls{display:flex;gap:6px}
+      button{cursor:pointer;padding:6px 8px;border-radius:6px;border:none;background:var(--accent);color:white;font-weight:600}
+      button.land-btn{background:#ef4444}
+      button.arm-btn{background:#06b6d4}
+      .badges{display:flex;gap:8px;align-items:center;margin-top:6px}
+      .badge{padding:6px 8px;border-radius:999px;background:rgba(255,255,255,0.03);color:var(--muted);font-size:12px}
+      .badge.small{padding:4px 6px;font-size:11px}
     </style>
   </head>
   <body>
-    <h1>UAV Web Control</h1>
-    <div id="uav-list">
+    <header class="app-header">
+      <!-- <img src="/logo.png" alt="CloudCare" class="brand-logo" /> -->
+      <img src="/logo.png" alt="CloudCare" class="brand-logo" width="250" height="250">
+      <h1>Cloud Care UAVs Web Fleet System</h1>
+    </header>
+    <div id="uav-list" class="grid-container">
       {% if uavs %}
         {% for id, info in uavs.items() %}
-          <div class="uav">
-            <strong>{{ info.name or id }}</strong> <small>(id: {{ id }})</small>
-            {% set sp_list = setpoints.get(id) if setpoints is defined else None %}
-            {% if sp_list %}
-              <select class="sp-select" data-id="{{ id }}">
-                {% for sp in sp_list %}
-                  <option value="{{ loop.index0 }}">{{ loop.index0 }}: [{{ sp[0] }}, {{ sp[1] }}, {{ sp[2] }}]</option>
-                {% endfor %}
-              </select>
-            {% endif %}
-            <button class="fly-btn" data-id="{{ id }}">Fly</button>
-            <button class="arm-btn" data-id="{{ id }}">Arm</button>
-            <span class="status" id="status-{{ id }}">ready</span>
-            <span class="status" id="arm-status-{{ id }}" style="margin-left:8px">idle</span>
-          </div>
+            <div class="card" id="card-{{ id }}">
+              <div class="card-header">
+                <div class="card-title">{{ info.name or id }}</div>
+                <div class="card-sub">{{ id }}</div>
+              </div>  
+
+              <div class="card-body">
+                {% set sp_list = setpoints.get(id) if setpoints is defined else None %}
+                {% if sp_list %}
+                  <select class="sp-select" data-id="{{ id }}">
+                    {% for sp in sp_list %}
+                      <option value="{{ loop.index0 }}">{{ loop.index0 }}: [{{ sp[0] }}, {{ sp[1] }}, {{ sp[2] }}]</option>
+                    {% endfor %}
+                  </select>
+                {% endif %}
+
+                <div class="controls">
+                  <button class="fly-btn" data-id="{{ id }}">Fly</button>
+                  <button class="arm-btn" data-id="{{ id }}">Offboard</button>
+                  <!-- Disarm button hidden per request
+                  <button class="disarm-btn" data-id="{{ id }}">Disarm</button>
+                  -->
+                  <button class="land-btn" data-id="{{ id }}">Land</button>
+                </div>
+
+                <div class="badges">
+                  <div class="badge" id="status-{{ id }}">ready</div>
+                  <div class="badge small" id="arm-status-{{ id }}">idle</div>
+                  <!-- Disarm status badge hidden
+                  <div class="badge small" id="disarm-status-{{ id }}">idle</div>
+                  -->
+                  <div class="badge small" id="land-status-{{ id }}">idle</div>
+                </div>
+              </div>
+            </div>
         {% endfor %}
       {% else %}
         <p>No UAVs configured. Add entries in `uav_web_control/config/config.yaml` or in `px4_swarm_controller/config/drones.yaml`.</p>

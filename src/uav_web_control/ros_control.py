@@ -24,6 +24,9 @@ try:
         TrajectorySetpoint,
         OffboardControlMode,
         VehicleLocalPosition,
+        # optional status messages
+        ActuatorArmed,
+        VehicleStatus,
     )
 except Exception as e:
     log.error('rclpy or px4_msgs not available: %s', e)
@@ -118,6 +121,37 @@ class WebControl(Node):
             self.local_subs[i] = self.create_subscription(
                 VehicleLocalPosition, f'/px4_{i}/fmu/out/vehicle_local_position', make_cb(i), 10
             )
+
+            # subscribe to ActuatorArmed or VehicleStatus if available so we
+            # can reflect the real armed state (PX4 may reject disarm while
+            # in-air or for safety reasons). We add callbacks defensively.
+            try:
+                def make_armed_cb(idx):
+                    def acb(msg):
+                        # Try common field names
+                        if hasattr(msg, 'armed'):
+                            self.armed[idx] = bool(msg.armed)
+                        elif hasattr(msg, 'arming_state'):
+                            # best-effort: consider non-zero arming_state as armed
+                            try:
+                                self.armed[idx] = int(msg.arming_state) != 0
+                            except Exception:
+                                self.armed[idx] = False
+                        else:
+                            # unknown message layout
+                            pass
+
+                    return acb
+
+                # ActuatorArmed topic (preferred)
+                self.create_subscription(ActuatorArmed, f'/px4_{i}/fmu/out/actuator_armed', make_armed_cb(i), 10)
+            except Exception:
+                try:
+                    # fallback to VehicleStatus
+                    self.create_subscription(VehicleStatus, f'/px4_{i}/fmu/out/vehicle_status', make_armed_cb(i), 10)
+                except Exception:
+                    # no status subscriptions available; continue
+                    pass
             log.info('Created publishers for px4_%d: offboard=%s traj=%s cmd=%s', i, f'/px4_{i}/fmu/in/offboard_control_mode', f'/px4_{i}/fmu/in/trajectory_setpoint', f'/px4_{i}/fmu/in/vehicle_command')
 
         # state for setpoint progression
@@ -283,6 +317,73 @@ class WebControl(Node):
         # mark as armed locally (informational)
         self.armed[i] = True
 
+    def disarm(self, idx):
+        # send disarm command (VEHICLE_CMD_COMPONENT_ARM_DISARM = 400 with param1=0)
+        try:
+            i = int(idx)
+        except Exception:
+            raise ValueError('invalid idx for disarm')
+
+        pub = self.cmd_pubs.get(i)
+        traj_pub = self.traj_pubs.get(i)
+        wait_timeout = 5.0
+        waited = 0.0
+        wait_step = 0.1
+        subs = 0
+        while waited < wait_timeout:
+            try:
+                subs = 0
+                if pub is not None:
+                    subs += int(pub.get_subscription_count())
+                if traj_pub is not None:
+                    subs += int(traj_pub.get_subscription_count())
+            except Exception:
+                subs = 0
+            if subs > 0:
+                break
+            time.sleep(wait_step)
+            waited += wait_step
+
+        if subs == 0:
+            log.warning('No PX4 subscribers detected for px4_%d (waited %.1fs) — disarm may fail', i, waited)
+
+        repeat = 5
+        targets = [i, 1, 0]  # try specific idx, system 1, then broadcast
+        sent_any = False
+        for tgt in targets:
+            for attempt in range(repeat):
+                try:
+                    msg = VehicleCommand()
+                    msg.param1 = float(0.0)
+                    msg.param2 = float(0.0)
+                    msg.command = int(400)
+                    msg.target_system = int(tgt)
+                    msg.target_component = 1
+                    msg.source_system = 1
+                    msg.source_component = 1
+                    msg.from_external = True
+                    msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+
+                    pub.publish(msg)
+                    sent_any = True
+                    log.debug('disarm publish attempt %d for px4_%d via target %s', attempt + 1, i, tgt)
+                except Exception:
+                    log.exception('failed sending disarm to %d (attempt %d) via target %s', i, attempt + 1, tgt)
+
+            # give PX4 a short moment to apply
+            time.sleep(0.15)
+            # check if PX4 reported disarmed via subscribed status
+            try:
+                if not bool(self.armed.get(i, False)):
+                    log.info('disarm accepted for px4_%d via target %s', i, tgt)
+                    return True
+            except Exception:
+                pass
+
+        log.info('disarm() attempted to %d via targets %s (sent_any=%s)', i, targets, sent_any)
+        # if PX4 didn't report disarmed, leave local flag as-is (reflects actual state)
+        return False
+
     def offboard(self, idx):
         # set offboard mode
         # VEHICLE_CMD_DO_SET_MODE = 176 (in PX4) but existing C++ used a combo; we'll send DO_SET_MODE=176 param1:1 param2:6
@@ -303,6 +404,50 @@ class WebControl(Node):
         self.manual_targets[i] = [float(position[0]), float(position[1]), float(position[2])] + ([float(position[3])] if len(position) > 3 else [])
         self.manual_target_counters[i] = int(self.publish_hz * self.manual_target_duration_s)
         log.info('fly() queued for %d -> %s (publishing for %d cycles)', i, self.manual_targets[i], self.manual_target_counters[i])
+
+    def land(self, idx):
+        # command the drone to land at current position using MAV_CMD_NAV_LAND (21)
+        try:
+            i = int(idx)
+        except Exception:
+            raise ValueError('invalid idx for land')
+
+        # wait briefly for subscriptions
+        pub = self.cmd_pubs.get(i)
+        traj_pub = self.traj_pubs.get(i)
+        wait_timeout = 5.0
+        waited = 0.0
+        wait_step = 0.1
+        subs = 0
+        while waited < wait_timeout:
+            try:
+                subs = 0
+                if pub is not None:
+                    subs += int(pub.get_subscription_count())
+                if traj_pub is not None:
+                    subs += int(traj_pub.get_subscription_count())
+            except Exception:
+                subs = 0
+            if subs > 0:
+                break
+            time.sleep(wait_step)
+            waited += wait_step
+
+        if subs == 0:
+            log.warning('No PX4 subscribers detected for px4_%d (waited %.1fs) — land may fail', i, waited)
+
+        # send MAV_CMD_NAV_LAND (21) multiple times
+        counter = 0
+        repeat = 5
+        while counter < repeat:
+            try:
+                # param1..param7 left as defaults; PX4 should interpret this as 'land here'
+                self._publish_vehicle_command(i, 21)
+            except Exception:
+                log.exception('failed sending land to %d (attempt %d)', i, counter + 1)
+            counter += 1
+
+        log.info('land() sent to %d (repeated %d times)', i, repeat)
 
     def get_uav_status(self):
         """Return status info per UAV: whether publishers have subscribers.
@@ -375,3 +520,15 @@ def fly_uav(uav_idx, position):
     c = start_controller()
     idx = int(uav_idx)
     c.fly(idx, position)
+
+
+def land_uav(uav_idx):
+    c = start_controller()
+    idx = int(uav_idx)
+    c.land(idx)
+
+
+def disarm_uav(uav_idx):
+    c = start_controller()
+    idx = int(uav_idx)
+    return c.disarm(idx)

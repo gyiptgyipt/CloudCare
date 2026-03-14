@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, send_from_directory, send_file
 import yaml
 from pathlib import Path
 import logging
@@ -370,6 +370,116 @@ def arm():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/disarm', methods=['POST'])
+def disarm():
+    data = request.get_json() or {}
+    uav_id = data.get('id')
+    if not uav_id:
+        return jsonify({'status': 'error', 'message': 'missing uav id'}), 400
+
+    idx = _uav_index(uav_id)
+    topic = f"/px4_{idx}/fmu/in/vehicle_command"
+
+    # If ros_control available, call its disarm helper
+    if use_rclpy and ros_control_mod is not None:
+        try:
+            result = ros_control_mod.disarm_uav(idx)
+            if result:
+                return jsonify({'status': 'ok', 'message': f'disarm accepted by {uav_id} (px4_{idx})'})
+            else:
+                return jsonify({'status': 'error', 'message': f'disarm attempted but vehicle still reports armed for {uav_id} (px4_{idx})'}), 500
+        except Exception as e:
+            log.exception('ros_control.disarm_uav failed')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    ros2 = shutil.which('ros2')
+    if not ros2:
+        return jsonify({'status': 'error', 'message': 'ros2 CLI not found in PATH. Run Flask in a ROS2-sourced environment.'}), 500
+
+    try:
+        tnum = int(idx)
+    except Exception:
+        tnum = 1
+    msg_obj = {
+        "param1": 0.0,
+        "param2": 0.0,
+        "command": 400,
+        "target_system": tnum,
+        "target_component": 1,
+        "source_system": 1,
+        "source_component": 1,
+        "from_external": True,
+        "timestamp": 0,
+    }
+    msg = json.dumps(msg_obj)
+
+    cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/VehicleCommand', msg]
+    log.info('Falling back to ros2 CLI for disarm: %s', ' '.join(cmd))
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if proc.returncode == 0:
+            return jsonify({'status': 'ok', 'message': f'disarm command published to {topic}'})
+        else:
+            return jsonify({'status': 'error', 'message': proc.stderr or proc.stdout}), 500
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/land', methods=['POST'])
+def land():
+    data = request.get_json() or {}
+    uav_id = data.get('id')
+    if not uav_id:
+        return jsonify({'status': 'error', 'message': 'missing uav id'}), 400
+
+    idx = _uav_index(uav_id)
+    topic = f"/px4_{idx}/fmu/in/vehicle_command"
+
+    ros2 = shutil.which('ros2')
+    if not ros2:
+        return jsonify({'status': 'error', 'message': 'ros2 CLI not found in PATH. Run Flask in a ROS2-sourced environment.'}), 500
+
+    if use_rclpy and ros_control_mod is not None:
+        try:
+            # call ros_control land helper
+            ros_control_mod.land_uav(idx)
+            return jsonify({'status': 'ok', 'message': f'land command sent to {uav_id} (px4_{idx})'})
+        except Exception as e:
+            log.exception('ros_control.land_uav failed')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    # Fallback to ros2 CLI: send VehicleCommand with command=21 (MAV_CMD_NAV_LAND)
+    try:
+        tnum = int(idx)
+    except Exception:
+        tnum = 1
+    msg_obj = {
+        "param1": 0.0,
+        "param2": 0.0,
+        "command": 21,
+        "target_system": tnum,
+        "target_component": 1,
+        "source_system": 1,
+        "source_component": 1,
+        "from_external": True,
+        "timestamp": 0,
+    }
+    msg = json.dumps(msg_obj)
+
+    cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/VehicleCommand', msg]
+    log.info('Falling back to ros2 CLI for land: %s', ' '.join(cmd))
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if proc.returncode == 0:
+            return jsonify({'status': 'ok', 'message': f'land command published to {topic}'})
+        else:
+            return jsonify({'status': 'error', 'message': proc.stderr or proc.stdout}), 500
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/status', methods=['GET'])
 def status():
     """Return controller status for each UAV (connected / subscriber counts)."""
@@ -386,6 +496,21 @@ def status():
 
     # Fallback: indicate no controller
     return jsonify({'status': 'ok', 'data': {}, 'info': 'ros_control not available'})
+
+
+@app.route('/logo.png')
+def logo():
+    """Serve the uploaded logo placed under templates/logo/"""
+    logo_dir = Path(__file__).parent / 'templates' / 'logo'
+    logo_path = logo_dir / 'CloudCare logo.png'
+    if not logo_path.exists():
+        # fallback: try without space
+        alt = logo_dir / 'CloudCare_logo.png'
+        if alt.exists():
+            logo_path = alt
+    if not logo_path.exists():
+        return ('', 404)
+    return send_file(str(logo_path), mimetype='image/png')
 
 
 if __name__ == '__main__':
