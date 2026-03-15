@@ -26,6 +26,20 @@ python app.py
 
 3. Open `http://localhost:5000` and click a UAV's "Fly" button.
 
+Map Calibration (SITL)
+
+If you're running SITL, the UAV GPS may not match the map location. Use the
+calibration flow to align the map:
+
+1. Open a UAV's Maximize view.
+2. Click the map at the spot where the UAV should appear.
+3. Click "Calibrate Map".
+4. After calibration, the UAV marker and goal points will line up.
+
+Notes:
+- Calibration is per-UAV and stored in the browser (page reload clears it).
+- Goals are adjusted automatically using the calibration offset.
+
 Arm notes
 
 - The "Arm" buttons publish a ROS2 `px4_msgs/msg/VehicleCommand` arm message to the topic `/px4_<id>/fmu/in/vehicle_command` using the `ros2` CLI.

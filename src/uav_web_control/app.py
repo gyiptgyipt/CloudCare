@@ -174,21 +174,12 @@ def load_uavs():
             uavs = {}
             # initial_positions contains mapping of string id -> { initial_pose: { x, y } }
             initial = cfg.get('initial_positions', {})
-            setpoints = cfg.get('setpoints', {})
             for sid, val in initial.items():
                 idx = sid
                 pose = val.get('initial_pose', {})
                 x = float(pose.get('x', 0.0))
                 y = float(pose.get('y', 0.0))
-                # try to get altitude from first setpoint if present
-                z = None
-                if sid in setpoints and len(setpoints[sid]) > 0:
-                    try:
-                        z = float(setpoints[sid][0][2])
-                    except Exception:
-                        z = None
-                if z is None:
-                    z = -5.0
+                z = -5.0
                 uavs[f'uav{idx}'] = {'name': f'Drone {idx}', 'position': [x, y, z]}
             return uavs
     except Exception:
@@ -201,49 +192,95 @@ def load_uavs():
     return {}
 
 
-def load_setpoints():
-    """Load setpoints mapping from the preferred config file.
+def find_geo_origin():
+    """Try to find a geo origin (lat, lon, alt) from config files.
 
-    Returns dict[int] -> list of setpoints (each setpoint is list [x,y,z,(yaw)])
+    Looks in px4_swarm_controller config first, then local config files.
+    Returns tuple (lat, lon, alt) or None.
     """
-    try:
-        cfg_path = None
-        if PX4_CONFIG_CANDIDATE.exists():
-            cfg_path = PX4_CONFIG_CANDIDATE
-        elif 'PX4_CONFIG_CANDIDATE2' in globals() and PX4_CONFIG_CANDIDATE2.exists():
-            cfg_path = PX4_CONFIG_CANDIDATE2
+    # candidates
+    candidates = []
+    if PX4_CONFIG_CANDIDATE.exists():
+        candidates.append(PX4_CONFIG_CANDIDATE)
+    if 'PX4_CONFIG_CANDIDATE2' in globals() and PX4_CONFIG_CANDIDATE2.exists():
+        candidates.append(PX4_CONFIG_CANDIDATE2)
+    local_cfg = Path(__file__).parent / 'config' / 'config.yaml'
+    if local_cfg.exists():
+        candidates.append(local_cfg)
+
+    for p in candidates:
+        try:
+            cfg = yaml.safe_load(Path(p).read_text()) or {}
+            go = cfg.get('geo_origin') or cfg.get('origin') or cfg.get('geo')
+            if go and isinstance(go, dict) and 'lat' in go and 'lon' in go:
+                lat = float(go.get('lat'))
+                lon = float(go.get('lon'))
+                alt = float(go.get('alt', 0.0))
+                return (lat, lon, alt)
+        except Exception:
+            continue
+    return None
+
+
+def latlon_to_local(lat, lon, alt=None, alt_frame=None):
+    """Convert lat/lon/alt to local x,y,z (meters).
+
+    Uses a simple equirectangular approximation around a geo_origin found
+    in config. Returns (x, y, z) where x=east, y=north, z=negative down
+    similar to existing setpoint conventions (z negative for altitude).
+    """
+    origin = find_geo_origin()
+    if origin is None:
+        raise RuntimeError('geo_origin not found in config; add geo_origin: {lat: .., lon: .., alt: ..} to your config')
+    lat0, lon0, alt0 = origin
+    # Earth radius (m)
+    R = 6378137.0
+    import math
+    dlat = math.radians(lat - lat0)
+    dlon = math.radians(lon - lon0)
+    mean_lat = math.radians((lat + lat0) / 2.0)
+    east = R * dlon * math.cos(mean_lat)
+    north = R * dlat
+    # altitude: if provided use it, else use origin altitude or -5m default
+    if alt is None:
+        if alt0 is not None:
+            z = -(alt0)
         else:
-            local_cfg = Path(__file__).parent / 'config' / 'config.yaml'
-            local_uavs = Path(__file__).parent / 'config' / 'uavs.yaml'
-            if local_cfg.exists():
-                cfg_path = local_cfg
-            elif local_uavs.exists():
-                cfg_path = local_uavs
+            z = -5.0
+    else:
+        if alt_frame == 'agl':
+            # AGL height: local NED z is negative down
+            z = -(float(alt))
+        else:
+            # AMSL: convert to local relative to geo_origin alt
+            base_alt = float(alt0) if alt0 is not None else 0.0
+            z = -(float(alt) - base_alt)
+    return [float(east), float(north), float(z)]
 
-        if cfg_path is None:
-            return {}
 
-        cfg = yaml.safe_load(cfg_path.read_text()) or {}
-        sp = cfg.get('setpoints', {})
-        out = {}
-        for k, v in sp.items():
-            try:
-                out[int(k)] = [list(map(float, s)) for s in v]
-            except Exception:
-                log.exception('invalid setpoint format for %s', k)
-        return out
-    except Exception:
-        log.exception('failed to load setpoints')
-        return {}
+def local_to_latlon(x, y, z=None):
+    """Convert local x,y,z (meters) to lat/lon/alt using geo_origin."""
+    origin = find_geo_origin()
+    if origin is None:
+        raise RuntimeError('geo_origin not found in config; add geo_origin: {lat: .., lon: .., alt: ..} to your config')
+    lat0, lon0, alt0 = origin
+    import math
+    R = 6378137.0
+    dlat = float(y) / R
+    dlon = float(x) / (R * math.cos(math.radians(lat0)))
+    lat = lat0 + math.degrees(dlat)
+    lon = lon0 + math.degrees(dlon)
+    if z is None:
+        alt = float(alt0) if alt0 is not None else 0.0
+    else:
+        alt = float(alt0) - float(z)
+    return lat, lon, alt
 
 
 @app.route('/')
 def index():
     uavs = load_uavs()
-    setpoints = load_setpoints()
-    # convert setpoints keys to 'uav{n}' to match uavs keys used in template
-    sp_map = {f'uav{int(k)}': v for k, v in setpoints.items()}
-    return render_template('index.html', uavs=uavs, setpoints=sp_map)
+    return render_template('index.html', uavs=uavs)
 
 
 @app.route('/fly', methods=['POST'])
@@ -253,62 +290,109 @@ def fly():
     uavs = load_uavs()
     if uav_id not in uavs:
         return jsonify({'status': 'error', 'message': 'unknown uav id'}), 400
-    # default target is the configured initial position (x,y,z)
-    target = uavs[uav_id].get('position')
-    # allow selecting a setpoint index from config: data may contain 'index' (0-based) or 'sp_index'
-    sp_index = data.get('index') if data.get('index') is not None else data.get('sp_index')
-    if sp_index is not None:
+    # allow lat/lon selection from UI
+    lat = data.get('lat') if data.get('lat') is not None else data.get('latitude')
+    lon = data.get('lon') if data.get('lon') is not None else data.get('longitude')
+    alt = data.get('alt') if data.get('alt') is not None else None
+    alt_ft = data.get('alt_ft') if data.get('alt_ft') is not None else None
+    alt_frame = data.get('alt_frame')
+    if alt_ft is not None and alt is None:
         try:
-            si = int(sp_index)
-            setpoints = load_setpoints()
-            idx_num = int(_uav_index(uav_id))
-            if idx_num not in setpoints:
-                return jsonify({'status': 'error', 'message': f'no setpoints for uav {uav_id}'}), 400
-            if si < 0 or si >= len(setpoints[idx_num]):
-                return jsonify({'status': 'error', 'message': f'invalid setpoint index {si} for {uav_id}'}), 400
-            target = setpoints[idx_num][si]
-        except ValueError:
-            return jsonify({'status': 'error', 'message': 'index must be integer'}), 400
-    # Normalize the UAV id to a numeric index (uav1 -> 1, px4_1 -> 1)
+            alt = float(alt_ft) * 0.3048
+        except Exception:
+            return jsonify({'status': 'error', 'message': 'invalid alt_ft value'}), 400
+    if alt is not None and not alt_frame:
+        alt_frame = 'agl'
+    if lat is None or lon is None:
+        return jsonify({'status': 'error', 'message': 'lat/lon required'}), 400
+
+    # Compute AMSL altitude without geo_origin, using UAV GPS if AGL was requested.
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'invalid lat/lon values'}), 400
+
     idx = _uav_index(uav_id)
-
-    # If rclpy and ros_control are available, use its API
-    if use_rclpy and ros_control_mod is not None:
+    alt_m = float(alt) if alt is not None else (20.0 * 0.3048)
+    if use_rclpy and ros_control_mod is not None and hasattr(ros_control_mod, 'get_global_position_uav'):
+        gp = ros_control_mod.get_global_position_uav(idx)
+    else:
+        gp = None
+    if alt_frame == 'agl':
+        if not gp or len(gp) < 3:
+            return jsonify({'status': 'error', 'message': 'no GPS altitude available for AGL conversion'}), 400
         try:
-            # fly_uav expects numeric index and position
-            ros_control_mod.fly_uav(idx, target)
-            return jsonify({'status': 'ok', 'message': f'fly command sent to {uav_id} (px4_{idx})'})
-        except Exception as e:
-            log.exception('ros_control.fly_uav failed')
-            return jsonify({'status': 'error', 'message': str(e)}), 500
+            alt_m = float(gp[2]) + float(alt_m or 0.0)
+        except Exception:
+            return jsonify({'status': 'error', 'message': 'invalid AGL conversion'}), 400
+    elif alt_m is None and gp and len(gp) >= 3:
+        # default to current GPS altitude if no altitude provided
+        try:
+            alt_m = float(gp[2])
+        except Exception:
+            pass
 
-    # Fallback: try ros2 CLI (if available) to publish a TrajectorySetpoint,
-    # otherwise use the controller stub.
+    # Prefer local offboard setpoint derived from current GPS + local position
+    try:
+        if use_rclpy and ros_control_mod is not None and hasattr(ros_control_mod, 'get_local_position_uav'):
+            lp = ros_control_mod.get_local_position_uav(idx)
+        else:
+            lp = None
+        if use_rclpy and ros_control_mod is not None and gp and lp:
+            try:
+                cur_lat, cur_lon, cur_alt = float(gp[0]), float(gp[1]), float(gp[2])
+                cur_x, cur_y, cur_z = float(lp[0]), float(lp[1]), float(lp[2])
+                import math
+                R = 6378137.0
+                dlat = math.radians(lat - cur_lat)
+                dlon = math.radians(lon - cur_lon)
+                mean_lat = math.radians((lat + cur_lat) / 2.0)
+                east = R * dlon * math.cos(mean_lat)
+                north = R * dlat
+                # PX4 local frame is NED: x=north, y=east, z=down
+                target_x = cur_x + north
+                target_y = cur_y + east
+                if alt_frame == 'agl':
+                    target_z = cur_z - float(alt_m or 0.0)
+                else:
+                    target_z = cur_z + (cur_alt - float(alt_m if alt_m is not None else cur_alt))
+                ros_control_mod.fly_uav(idx, [target_x, target_y, target_z, 0.0])
+                return jsonify({'status': 'ok', 'message': f'local setpoint sent to {uav_id} (px4_{idx})'})
+            except Exception:
+                log.exception('failed to compute local target from GPS')
+        # fallback to global setpoint
+        if use_rclpy and ros_control_mod is not None:
+            ros_control_mod.global_setpoint_uav(idx, lat, lon, alt_m)
+            return jsonify({'status': 'ok', 'message': f'global setpoint sent to {uav_id} (px4_{idx})'})
+    except Exception as e:
+        log.exception('ros_control.global_setpoint_uav failed')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
     ros2 = shutil.which('ros2')
     if ros2:
         try:
-            # Build message with position array and yaw (if provided)
-            x, y, z = float(target[0]), float(target[1]), float(target[2])
-            yaw = float(target[3]) if len(target) > 3 else 0.0
-            msg_obj = {"position": [x, y, z], "yaw": yaw, "timestamp": 0}
-            msg = json.dumps(msg_obj)
-            topic = f"/px4_{idx}/fmu/in/trajectory_setpoint"
-            cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/TrajectorySetpoint', msg]
-            log.info('Publishing TrajectorySetpoint via CLI: %s', ' '.join(cmd))
+            topic = f"/px4_{idx}/fmu/in/position_setpoint"
+            msg_obj = {
+                "timestamp": 0,
+                "valid": True,
+                "type": 0,
+                "lat": float(lat),
+                "lon": float(lon),
+                "alt": float(alt_m) if alt_m is not None else 0.0,
+                "yaw": 0.0
+            }
+            cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/PositionSetpoint', json.dumps(msg_obj)]
+            log.info('Publishing PositionSetpoint via CLI: %s', ' '.join(cmd))
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if proc.returncode == 0:
-                return jsonify({'status': 'ok', 'message': f'fly command published to {topic}'})
+                return jsonify({'status': 'ok', 'message': f'global setpoint published to {topic}'})
             else:
                 return jsonify({'status': 'error', 'message': proc.stderr or proc.stdout or proc.returncode}), 500
         except Exception as e:
             return jsonify({'status': 'error', 'message': str(e)}), 500
 
-    # Last-resort: controller stub writes last_command.json for debugging
-    try:
-        fly_to(uav_id, target)
-        return jsonify({'status': 'ok', 'message': f'command saved for {uav_id} (no ros2 available)'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    return jsonify({'status': 'error', 'message': 'rclpy not available and ros2 CLI not found to publish global setpoint'}), 500
 
 
 @app.route('/arm', methods=['POST'])
@@ -344,7 +428,7 @@ def arm():
         tnum = int(idx)
     except Exception:
         tnum = 1
-    msg_obj = {
+    arm_msg_obj = {
         "param1": 1.0,
         "param2": 0.0,
         "command": 400,
@@ -355,17 +439,35 @@ def arm():
         "from_external": True,
         "timestamp": 0,
     }
-    msg = json.dumps(msg_obj)
+    arm_msg = json.dumps(arm_msg_obj)
 
-    cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/VehicleCommand', msg]
-    log.info('Falling back to ros2 CLI: %s', ' '.join(cmd))
+    # Offboard mode: VEHICLE_CMD_DO_SET_MODE (176) with params as used in ros_control
+    offboard_msg_obj = {
+        "param1": 1.0,
+        "param2": 6.0,
+        "command": 176,
+        "target_system": tnum,
+        "target_component": 1,
+        "source_system": 1,
+        "source_component": 1,
+        "from_external": True,
+        "timestamp": 0,
+    }
+    offboard_msg = json.dumps(offboard_msg_obj)
+
+    arm_cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/VehicleCommand', arm_msg]
+    offboard_cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/VehicleCommand', offboard_msg]
+    log.info('Falling back to ros2 CLI (arm): %s', ' '.join(arm_cmd))
+    log.info('Falling back to ros2 CLI (offboard): %s', ' '.join(offboard_cmd))
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if proc.returncode == 0:
-            return jsonify({'status': 'ok', 'message': f'arm command published to {topic}'})
-        else:
+        proc = subprocess.run(arm_cmd, capture_output=True, text=True, timeout=10)
+        if proc.returncode != 0:
             return jsonify({'status': 'error', 'message': proc.stderr or proc.stdout}), 500
+        proc = subprocess.run(offboard_cmd, capture_output=True, text=True, timeout=10)
+        if proc.returncode == 0:
+            return jsonify({'status': 'ok', 'message': f'arm+offboard commands published to {topic}'})
+        return jsonify({'status': 'error', 'message': proc.stderr or proc.stdout}), 500
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -489,6 +591,24 @@ def status():
             st = ros_control_mod._controller.get_uav_status() if hasattr(ros_control_mod, '_controller') else ros_control_mod.get_uav_status()
             # convert keys to strings like 'uav1'
             out = {f'uav{k}': v for k, v in st.items()}
+            # attach derived lat/lon if geo_origin available
+            for key, v in out.items():
+                try:
+                    gp = v.get('global_position')
+                    if isinstance(gp, (list, tuple)) and len(gp) >= 2:
+                        v['lat'] = float(gp[0])
+                        v['lon'] = float(gp[1])
+                        v['alt'] = float(gp[2]) if len(gp) > 2 else 0.0
+                    else:
+                        lp = v.get('local_position')
+                        if isinstance(lp, (list, tuple)) and len(lp) >= 2:
+                            lat, lon, alt = local_to_latlon(lp[0], lp[1], lp[2] if len(lp) > 2 else None)
+                            v['lat'] = float(lat)
+                            v['lon'] = float(lon)
+                            v['alt'] = float(alt)
+                except Exception:
+                    # best-effort: ignore conversion errors
+                    pass
             return jsonify({'status': 'ok', 'data': out})
         except Exception as e:
             log.exception('Failed to get ros_control status')

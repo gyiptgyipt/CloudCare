@@ -19,6 +19,7 @@ logging.basicConfig(level=logging.INFO)
 try:
     import rclpy
     from rclpy.node import Node
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
     from px4_msgs.msg import (
         VehicleCommand,
         TrajectorySetpoint,
@@ -27,7 +28,14 @@ try:
         # optional status messages
         ActuatorArmed,
         VehicleStatus,
+        PositionSetpoint,
     )
+    try:
+        from px4_msgs.msg import VehicleGlobalPosition
+        HAS_GLOBAL_POS = True
+    except Exception:
+        VehicleGlobalPosition = None
+        HAS_GLOBAL_POS = False
 except Exception as e:
     log.error('rclpy or px4_msgs not available: %s', e)
     raise
@@ -86,6 +94,8 @@ class WebControl(Node):
 
         # local positions
         self.local_positions = {i: [0.0, 0.0, 0.0] for i in range(1, self.num_drones + 1)}
+        # global positions (lat, lon, alt)
+        self.global_positions = {i: None for i in range(1, self.num_drones + 1)}
 
         # manual target storage: when a Fly button is pressed, we store the
         # requested position here and publish it for a short duration so PX4
@@ -101,14 +111,21 @@ class WebControl(Node):
         self.offboard_pubs = {}
         self.traj_pubs = {}
         self.cmd_pubs = {}
+        self.pos_pubs = {}
 
         self.local_subs = {}
+        self.global_subs = {}
 
         # create publishers/subscribers for each drone
         log.info('Creating publishers/subscribers for %d drones', self.num_drones)
         for i in range(1, self.num_drones + 1):
             self.offboard_pubs[i] = self.create_publisher(OffboardControlMode, f'/px4_{i}/fmu/in/offboard_control_mode', 10)
             self.traj_pubs[i] = self.create_publisher(TrajectorySetpoint, f'/px4_{i}/fmu/in/trajectory_setpoint', 10)
+            # publisher for global position setpoints (WGS84)
+            try:
+                self.pos_pubs[i] = self.create_publisher(PositionSetpoint, f'/px4_{i}/fmu/in/position_setpoint', 10)
+            except Exception:
+                self.pos_pubs[i] = None
             self.cmd_pubs[i] = self.create_publisher(VehicleCommand, f'/px4_{i}/fmu/in/vehicle_command', 10)
 
             # subscriber for local position
@@ -121,6 +138,31 @@ class WebControl(Node):
             self.local_subs[i] = self.create_subscription(
                 VehicleLocalPosition, f'/px4_{i}/fmu/out/vehicle_local_position', make_cb(i), 10
             )
+
+            # optional global position (GPS)
+            if HAS_GLOBAL_POS and VehicleGlobalPosition is not None:
+                qos = QoSProfile(depth=1)
+                qos.reliability = ReliabilityPolicy.BEST_EFFORT
+                qos.durability = DurabilityPolicy.VOLATILE
+                qos.history = HistoryPolicy.KEEP_LAST
+                def make_gcb(idx):
+                    def gcb(msg):
+                        try:
+                            lat = float(msg.lat)
+                            lon = float(msg.lon)
+                            alt = float(getattr(msg, 'alt', 0.0))
+                            # heuristic: PX4 VehicleGlobalPosition uses 1e7 scaled degrees
+                            if abs(lat) > 180.0 or abs(lon) > 180.0:
+                                lat = lat / 1e7
+                                lon = lon / 1e7
+                            self.global_positions[idx] = [lat, lon, alt]
+                        except Exception:
+                            pass
+                    return gcb
+
+                self.global_subs[i] = self.create_subscription(
+                    VehicleGlobalPosition, f'/px4_{i}/fmu/out/vehicle_global_position', make_gcb(i), qos
+                )
 
             # subscribe to ActuatorArmed or VehicleStatus if available so we
             # can reflect the real armed state (PX4 may reject disarm while
@@ -405,6 +447,32 @@ class WebControl(Node):
         self.manual_target_counters[i] = int(self.publish_hz * self.manual_target_duration_s)
         log.info('fly() queued for %d -> %s (publishing for %d cycles)', i, self.manual_targets[i], self.manual_target_counters[i])
 
+    def send_global_setpoint(self, idx, lat, lon, alt=None, yaw=0.0):
+        try:
+            i = int(idx)
+        except Exception:
+            raise ValueError('invalid idx for global setpoint')
+
+        pub = self.pos_pubs.get(i) if hasattr(self, 'pos_pubs') else None
+        if pub is None:
+            raise KeyError(f'No position_setpoint publisher for idx {i}')
+
+        msg = PositionSetpoint()
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        msg.valid = True
+        msg.type = PositionSetpoint.SETPOINT_TYPE_POSITION
+        msg.lat = float(lat)
+        msg.lon = float(lon)
+        msg.alt = float(alt) if alt is not None else 0.0
+        msg.yaw = float(yaw)
+        # acceptance radii left default
+        try:
+            pub.publish(msg)
+            log.info('Published global position setpoint to px4_%d: %s,%s,%s', i, lat, lon, alt)
+        except Exception:
+            log.exception('failed publishing global setpoint to %d', i)
+
+
     def land(self, idx):
         # command the drone to land at current position using MAV_CMD_NAV_LAND (21)
         try:
@@ -477,8 +545,23 @@ class WebControl(Node):
                 'manual_target_active': bool(self.manual_targets.get(i) is not None),
                 'manual_target_cycles': int(self.manual_target_counters.get(i, 0)),
                 'local_position': list(self.local_positions.get(i, [0.0, 0.0, 0.0])),
+                'global_position': self.global_positions.get(i),
             }
         return status
+
+    def get_global_position(self, idx):
+        try:
+            i = int(idx)
+        except Exception:
+            return None
+        return self.global_positions.get(i)
+
+    def get_local_position(self, idx):
+        try:
+            i = int(idx)
+        except Exception:
+            return None
+        return self.local_positions.get(i)
 
 
 # Create a singleton controller instance and spin in background
@@ -532,3 +615,21 @@ def disarm_uav(uav_idx):
     c = start_controller()
     idx = int(uav_idx)
     return c.disarm(idx)
+
+
+def global_setpoint_uav(uav_idx, lat, lon, alt=None, yaw=0.0):
+    c = start_controller()
+    idx = int(uav_idx)
+    return c.send_global_setpoint(idx, lat, lon, alt, yaw)
+
+
+def get_global_position_uav(uav_idx):
+    c = start_controller()
+    idx = int(uav_idx)
+    return c.get_global_position(idx)
+
+
+def get_local_position_uav(uav_idx):
+    c = start_controller()
+    idx = int(uav_idx)
+    return c.get_local_position(idx)
