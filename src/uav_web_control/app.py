@@ -118,6 +118,7 @@ except Exception:
     use_rclpy = False
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
+manual_mode_flags = {}
 
 LOCAL_CONFIG_PATH = Path(__file__).parent / 'config' / 'uavs.yaml'
 # Try to prefer the px4_swarm_controller config if available in the workspace
@@ -482,20 +483,21 @@ def disarm():
     idx = _uav_index(uav_id)
     topic = f"/px4_{idx}/fmu/in/vehicle_command"
 
+    disarm_sent = False
     # If ros_control available, call its disarm helper
     if use_rclpy and ros_control_mod is not None:
         try:
             result = ros_control_mod.disarm_uav(idx)
+            disarm_sent = True
             if result:
                 return jsonify({'status': 'ok', 'message': f'disarm accepted by {uav_id} (px4_{idx})'})
-            else:
-                return jsonify({'status': 'error', 'message': f'disarm attempted but vehicle still reports armed for {uav_id} (px4_{idx})'}), 500
         except Exception as e:
             log.exception('ros_control.disarm_uav failed')
-            return jsonify({'status': 'error', 'message': str(e)}), 500
 
     ros2 = shutil.which('ros2')
     if not ros2:
+        if disarm_sent:
+            return jsonify({'status': 'ok', 'message': f'disarm attempted for {uav_id} (px4_{idx}); check status'}), 200
         return jsonify({'status': 'error', 'message': 'ros2 CLI not found in PATH. Run Flask in a ROS2-sourced environment.'}), 500
 
     try:
@@ -526,6 +528,188 @@ def disarm():
             return jsonify({'status': 'error', 'message': proc.stderr or proc.stdout}), 500
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/force_disarm', methods=['POST'])
+def force_disarm():
+    data = request.get_json() or {}
+    uav_id = data.get('id')
+    if not uav_id:
+        return jsonify({'status': 'error', 'message': 'missing uav id'}), 400
+
+    idx = _uav_index(uav_id)
+    topic = f"/px4_{idx}/fmu/in/vehicle_command"
+
+    if use_rclpy and ros_control_mod is not None:
+        try:
+            ros_control_mod.force_disarm_uav(idx)
+            return jsonify({'status': 'ok', 'message': f'force disarm sent to {uav_id} (px4_{idx})'})
+        except Exception as e:
+            log.exception('ros_control.force_disarm_uav failed')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    ros2 = shutil.which('ros2')
+    if not ros2:
+        return jsonify({'status': 'error', 'message': 'ros2 CLI not found in PATH. Run Flask in a ROS2-sourced environment.'}), 500
+
+    try:
+        tnum = int(idx)
+    except Exception:
+        tnum = 1
+    msg_obj = {
+        "param1": 0.0,
+        "param2": 21196.0,
+        "command": 400,
+        "target_system": tnum,
+        "target_component": 1,
+        "source_system": 1,
+        "source_component": 1,
+        "from_external": True,
+        "timestamp": 0,
+    }
+    msg = json.dumps(msg_obj)
+
+    cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/VehicleCommand', msg]
+    log.info('Falling back to ros2 CLI for force disarm: %s', ' '.join(cmd))
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if proc.returncode == 0:
+            return jsonify({'status': 'ok', 'message': f'force disarm command published to {topic}'})
+        else:
+            return jsonify({'status': 'error', 'message': proc.stderr or proc.stdout}), 500
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/home', methods=['POST'])
+def go_home():
+    data = request.get_json() or {}
+    uav_id = data.get('id')
+    if not uav_id:
+        return jsonify({'status': 'error', 'message': 'missing uav id'}), 400
+
+    idx = _uav_index(uav_id)
+    home = None
+    if use_rclpy and ros_control_mod is not None and hasattr(ros_control_mod, 'get_home_position_uav'):
+        home = ros_control_mod.get_home_position_uav(idx)
+    if not home or len(home) < 2:
+        return jsonify({'status': 'error', 'message': 'home position not available yet'}), 400
+    lat, lon = float(home[0]), float(home[1])
+    alt_m = float(home[2]) if len(home) > 2 else None
+    try:
+        if use_rclpy and ros_control_mod is not None and hasattr(ros_control_mod, 'get_local_position_uav'):
+            gp = ros_control_mod.get_global_position_uav(idx) if hasattr(ros_control_mod, 'get_global_position_uav') else None
+            lp = ros_control_mod.get_local_position_uav(idx)
+            if gp and lp:
+                try:
+                    cur_lat, cur_lon, cur_alt = float(gp[0]), float(gp[1]), float(gp[2])
+                    cur_x, cur_y, cur_z = float(lp[0]), float(lp[1]), float(lp[2])
+                    import math
+                    R = 6378137.0
+                    dlat = math.radians(lat - cur_lat)
+                    dlon = math.radians(lon - cur_lon)
+                    mean_lat = math.radians((lat + cur_lat) / 2.0)
+                    east = R * dlon * math.cos(mean_lat)
+                    north = R * dlat
+                    target_x = cur_x + north
+                    target_y = cur_y + east
+                    target_z = cur_z + (cur_alt - float(alt_m if alt_m is not None else cur_alt))
+                    ros_control_mod.fly_uav(idx, [target_x, target_y, target_z, 0.0])
+                    return jsonify({'status': 'ok', 'message': f'home local setpoint sent to {uav_id} (px4_{idx})'})
+                except Exception:
+                    log.exception('failed to compute local home target')
+            ros_control_mod.global_setpoint_uav(idx, lat, lon, alt_m)
+            return jsonify({'status': 'ok', 'message': f'home setpoint sent to {uav_id} (px4_{idx})'})
+    except Exception as e:
+        log.exception('ros_control.global_setpoint_uav failed for home')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    ros2 = shutil.which('ros2')
+    if ros2:
+        try:
+            topic = f"/px4_{idx}/fmu/in/position_setpoint"
+            msg_obj = {
+                "timestamp": 0,
+                "valid": True,
+                "type": 0,
+                "lat": float(lat),
+                "lon": float(lon),
+                "alt": float(alt_m) if alt_m is not None else 0.0,
+                "yaw": 0.0
+            }
+            cmd = [ros2, 'topic', 'pub', '-1', topic, 'px4_msgs/msg/PositionSetpoint', json.dumps(msg_obj)]
+            log.info('Publishing home PositionSetpoint via CLI: %s', ' '.join(cmd))
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if proc.returncode == 0:
+                return jsonify({'status': 'ok', 'message': f'home setpoint published to {topic}'})
+            else:
+                return jsonify({'status': 'error', 'message': proc.stderr or proc.stdout or proc.returncode}), 500
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    return jsonify({'status': 'error', 'message': 'ros2 CLI not found and rclpy unavailable for home setpoint'}), 500
+
+
+@app.route('/teleop', methods=['POST'])
+def teleop():
+    data = request.get_json() or {}
+    uav_id = data.get('id')
+    if not uav_id:
+        return jsonify({'status': 'error', 'message': 'missing uav id'}), 400
+
+    try:
+        x = float(data.get('x', 0.0))
+        y = float(data.get('y', 0.0))
+        alt_ft = float(data.get('alt_ft', 10.0))
+        speed = float(data.get('speed', 2.0))
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'invalid teleop values'}), 400
+
+    idx = _uav_index(uav_id)
+    if not manual_mode_flags.get(uav_id, False):
+        return jsonify({'status': 'error', 'message': 'manual mode disabled'}), 400
+    if not (use_rclpy and ros_control_mod is not None and hasattr(ros_control_mod, 'get_local_position_uav')):
+        return jsonify({'status': 'error', 'message': 'teleop requires rclpy local position'}), 500
+
+    lp = ros_control_mod.get_local_position_uav(idx)
+    if not lp or len(lp) < 3:
+        return jsonify({'status': 'error', 'message': 'local position not available'}), 500
+
+    # velocity command with altitude hold from slider
+    alt_m = float(alt_ft) * 0.3048
+    target_z = -alt_m  # NED down
+    vx = x * speed
+    vy = y * speed
+    try:
+        if hasattr(ros_control_mod, 'teleop_velocity_uav'):
+            ros_control_mod.teleop_velocity_uav(idx, vx, vy, target_z)
+        else:
+            ros_control_mod.fly_uav(idx, [cur_x + vx * 0.2, cur_y + vy * 0.2, target_z, 0.0])
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/manual_mode', methods=['POST'])
+def manual_mode():
+    data = request.get_json() or {}
+    uav_id = data.get('id')
+    if not uav_id:
+        return jsonify({'status': 'error', 'message': 'missing uav id'}), 400
+    enabled = bool(data.get('enabled'))
+    manual_mode_flags[uav_id] = enabled
+    if use_rclpy and ros_control_mod is not None and hasattr(ros_control_mod, 'set_manual_mode_uav'):
+        try:
+            ros_control_mod.set_manual_mode_uav(_uav_index(uav_id), enabled)
+        except Exception:
+            log.exception('manual_mode set failed')
+    if enabled and use_rclpy and ros_control_mod is not None:
+        try:
+            ros_control_mod.arm_uav(_uav_index(uav_id))
+        except Exception:
+            log.exception('manual_mode arm/offboard failed')
+    return jsonify({'status': 'ok', 'enabled': enabled})
 
 
 @app.route('/land', methods=['POST'])

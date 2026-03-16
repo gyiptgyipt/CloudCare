@@ -3,6 +3,9 @@ const goalDrafts = {}
 let activeModalId = null
 let modalMapState = null
 const mapOffsets = {}
+let teleopInterval = null
+let teleopState = null
+const manualMode = {}
 
 function getInputEl(id, selector) {
   if (activeModalId === id) {
@@ -165,7 +168,7 @@ document.addEventListener('click', function (e) {
 document.addEventListener('click', function (e) {
   if (!e.target.matches('.disarm-btn')) return
   const id = e.target.dataset.id
-  const statusEl = document.getElementById('disarm-status-' + id)
+  const statusEl = document.getElementById('arm-status-' + id)
   statusEl.textContent = 'sending disarm...'
   fetch('/disarm', {
     method: 'POST',
@@ -175,6 +178,52 @@ document.addEventListener('click', function (e) {
     .then(data => {
       if (data.status === 'ok') {
         statusEl.textContent = 'disarm command sent'
+      } else {
+        statusEl.textContent = 'error: ' + (data.message || 'unknown')
+      }
+    }).catch(err => {
+      statusEl.textContent = 'network error'
+      console.error(err)
+    })
+}
+)
+
+document.addEventListener('click', function (e) {
+  if (!e.target.matches('.force-disarm-btn')) return
+  const id = e.target.dataset.id
+  const statusEl = document.getElementById('arm-status-' + id)
+  statusEl.textContent = 'sending force disarm...'
+  fetch('/force_disarm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).then(r => r.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        statusEl.textContent = 'force disarm sent'
+      } else {
+        statusEl.textContent = 'error: ' + (data.message || 'unknown')
+      }
+    }).catch(err => {
+      statusEl.textContent = 'network error'
+      console.error(err)
+    })
+}
+)
+
+document.addEventListener('click', function (e) {
+  if (!e.target.matches('.home-btn')) return
+  const id = e.target.dataset.id
+  const statusEl = document.getElementById('status-' + id)
+  statusEl.textContent = 'sending home...'
+  fetch('/home', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).then(r => r.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        statusEl.textContent = 'home command sent'
       } else {
         statusEl.textContent = 'error: ' + (data.message || 'unknown')
       }
@@ -219,20 +268,30 @@ function updateStatusUI(statusData) {
     const armBtn = document.querySelector(`.arm-btn[data-id="${id}"]`)
     const draftBtn = document.querySelector(`.draft-btn[data-id="${id}"]`)
     const disarmBtn = document.querySelector(`.disarm-btn[data-id="${id}"]`)
+    const forceDisarmBtn = document.querySelector(`.force-disarm-btn[data-id="${id}"]`)
+    const homeBtn = document.querySelector(`.home-btn[data-id="${id}"]`)
     const statusEl = document.getElementById('status-' + id)
     const armStatusEl = document.getElementById('arm-status-' + id)
-    const disarmStatusEl = document.getElementById('disarm-status-' + id)
+    const goalStatusEl = document.getElementById('goal-status-' + id)
     // Disarm UI removed: keep original behavior for arm/status
     if (flyBtn) flyBtn.disabled = !connected
     if (armBtn) armBtn.disabled = !connected
     if (draftBtn) draftBtn.disabled = !connected
     if (disarmBtn) disarmBtn.disabled = !connected
+    if (forceDisarmBtn) forceDisarmBtn.disabled = !connected
+    if (homeBtn) homeBtn.disabled = !connected
     if (statusEl && !goalDrafts[id]) statusEl.textContent = connected ? 'connected' : 'no node'
     if (armStatusEl) armStatusEl.textContent = info.armed ? 'armed' : (connected ? 'idle' : 'no node')
-    if (disarmStatusEl) disarmStatusEl.textContent = info.armed ? 'armed' : (connected ? 'disarmed' : 'no node')
+    if (armStatusEl && !info.armed && connected) armStatusEl.textContent = 'disarmed'
 
     if (info.lat !== undefined && info.lon !== undefined) {
       ensureMap(id, info.lat, info.lon)
+    }
+    if (goalStatusEl) {
+      updateGoalStatus(id, info, goalStatusEl)
+    }
+    if (activeModalId === id) {
+      renderModalStatus(id, info)
     }
   })
 }
@@ -309,6 +368,7 @@ function openModalFor(id) {
   const title = document.getElementById('uav-modal-title')
   const mapEl = document.getElementById('uav-modal-map')
   const controlsEl = document.getElementById('uav-modal-controls')
+  const teleopFooter = document.getElementById('uav-teleop-footer')
   if (!overlay || !title || !mapEl || !controlsEl) return
 
   activeModalId = id
@@ -330,6 +390,38 @@ function openModalFor(id) {
     if (srcLon && dstLon) dstLon.value = srcLon.value
     if (srcAlt && dstAlt) dstAlt.value = srcAlt.value
   }
+  const statusPanel = document.createElement('div')
+  statusPanel.id = 'uav-modal-status'
+  statusPanel.className = 'status-panel'
+  statusPanel.textContent = 'status loading...'
+  controlsEl.appendChild(statusPanel)
+
+  const teleopWrap = document.createElement('div')
+  teleopWrap.id = 'uav-teleop'
+  teleopWrap.className = 'teleop'
+  teleopWrap.innerHTML = `
+    <div class="joy-area" id="joy-area"><div class="joy-knob" id="joy-knob"></div></div>
+    <div class="teleop-meta">
+      <label>Speed (m/s)
+        <input type="range" id="teleop-speed" min="0.5" max="5" step="0.5" value="2">
+      </label>
+      <label>Altitude (ft)
+        <input type="range" id="teleop-alt-ft" min="10" max="40" step="0.5" value="15">
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="teleop-manual">
+        Manual Mode
+      </label>
+      <div id="teleop-readout">x:0 y:0 alt_ft:15</div>
+    </div>
+  `
+  if (teleopFooter) {
+    teleopFooter.innerHTML = ''
+    teleopFooter.appendChild(teleopWrap)
+  } else {
+    controlsEl.appendChild(teleopWrap)
+  }
+  setupTeleop(id)
 
   if (modalMapState && modalMapState.map) {
     modalMapState.map.remove()
@@ -398,6 +490,124 @@ function closeModal() {
   }
   modalMapState = null
   activeModalId = null
+  stopTeleop()
+}
+
+function setupTeleop(id) {
+  const area = document.getElementById('joy-area')
+  const knob = document.getElementById('joy-knob')
+  const speedEl = document.getElementById('teleop-speed')
+  const altEl = document.getElementById('teleop-alt-ft')
+  const readout = document.getElementById('teleop-readout')
+  const manualEl = document.getElementById('teleop-manual')
+  if (!area || !knob || !speedEl || !altEl || !readout) return
+  if (manualEl) {
+    manualEl.checked = !!manualMode[id]
+    manualEl.onchange = () => {
+      manualMode[id] = !!manualEl.checked
+      if (manualMode[id]) {
+        const altFt = parseFloat(altEl.value || '10')
+        teleopState = { x: 0, y: 0, alt_ft: altFt, speed: parseFloat(speedEl.value || '2') }
+        updateReadout(0, 0, altFt)
+        start()
+      } else {
+        stopTeleop()
+      }
+      fetch('/manual_mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, enabled: manualMode[id] })
+      }).catch(() => {})
+    }
+  }
+
+  const updateReadout = (x, y, altFt) => {
+    readout.textContent = `x:${x.toFixed(2)} y:${y.toFixed(2)} alt_ft:${altFt.toFixed(1)}`
+  }
+
+  const send = () => {
+    if (!teleopState) return
+    sendTeleop(id, teleopState.x, teleopState.y, teleopState.alt_ft, teleopState.speed)
+  }
+
+  const start = () => {
+    if (teleopInterval) return
+    teleopInterval = setInterval(send, 200)
+  }
+
+  const stop = () => {
+    const altFt = parseFloat(altEl.value || '15')
+    teleopState = { x: 0, y: 0, alt_ft: altFt, speed: parseFloat(speedEl.value || '2'), drag: { active: false } }
+    updateReadout(0, 0, altFt)
+    if (knob) {
+      knob.style.left = '50%'
+      knob.style.top = '50%'
+    }
+    start()
+    sendTeleop(id, 0, 0, altFt, parseFloat(speedEl.value || '2'))
+  }
+
+  const handleMove = (ev) => {
+    if (!teleopState || !teleopState.drag || !teleopState.drag.active) return
+    const rect = area.getBoundingClientRect()
+    const cx = rect.left + rect.width / 2
+    const cy = rect.top + rect.height / 2
+    const max = rect.width / 2 - 12
+    const ox = ev.clientX - cx
+    const oy = ev.clientY - cy
+    const clampedX = Math.max(-max, Math.min(max, ox))
+    const clampedY = Math.max(-max, Math.min(max, oy))
+    const nx = clampedX / max
+    const ny = clampedY / max
+    // joystick: up is negative screen y -> positive north (x)
+    const x = -ny
+    const y = nx
+    const altFt = parseFloat(altEl.value || '15')
+    const speed = parseFloat(speedEl.value || '2')
+    teleopState = { x, y, alt_ft: altFt, speed, drag: { active: true } }
+    if (!manualMode[id]) {
+      if (manualEl) manualEl.checked = true
+      manualMode[id] = true
+      fetch('/manual_mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, enabled: true })
+      }).catch(() => {})
+    }
+    knob.style.left = `${50 + (nx * 40)}%`
+    knob.style.top = `${50 + (ny * 40)}%`
+    updateReadout(x, y, altFt)
+    start()
+  }
+
+  area.onpointerdown = (ev) => {
+    area.setPointerCapture(ev.pointerId)
+    teleopState = teleopState || { x: 0, y: 0, alt_ft: parseFloat(altEl.value || '15'), speed: parseFloat(speedEl.value || '2'), drag: { active: false } }
+    teleopState.drag.active = true
+    handleMove(ev)
+  }
+  area.onpointermove = (ev) => {
+    if (teleopState && teleopState.drag && teleopState.drag.active) handleMove(ev)
+  }
+  area.onpointerup = () => stop()
+  area.onpointerleave = () => stop()
+}
+
+function stopTeleop() {
+  if (teleopInterval) {
+    clearInterval(teleopInterval)
+    teleopInterval = null
+  }
+  teleopState = null
+}
+
+function sendTeleop(id, x, y, altFt, speed) {
+  if (!manualMode[id]) return
+  fetch('/teleop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, x, y, alt_ft: altFt, speed })
+  }).catch(() => {})
 }
 
 function applyOffset(id, lat, lon) {
@@ -420,6 +630,81 @@ function updateCalibrateStatus(id) {
   } else {
     el.textContent = 'not calibrated'
   }
+}
+
+function updateGoalStatus(id, info, el) {
+  const goal = goalDrafts[id]
+  if (!goal || info.lat === undefined || info.lon === undefined) {
+    el.textContent = 'idle'
+    el.classList.remove('good')
+    return
+  }
+  const d = haversineMeters(info.lat, info.lon, goal.lat, goal.lon)
+  if (d <= 3.0) {
+    el.textContent = 'reached'
+    el.classList.add('good')
+  } else {
+    el.textContent = 'flying'
+    el.classList.remove('good')
+  }
+}
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6378137.0
+  const toRad = v => v * Math.PI / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLon = toRad(lon2 - lon1)
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+function renderModalStatus(id, info) {
+  const panel = document.getElementById('uav-modal-status')
+  if (!panel || activeModalId !== id) return
+  const vs = info.vehicle_status || {}
+  const vcm = info.vehicle_control_mode || {}
+  const batt = info.battery_status || {}
+  const gps = info.vehicle_gps_position || {}
+  const land = info.vehicle_land_detected || {}
+  const takeoff = info.takeoff_status || {}
+  const gpsLat = (gps.lat !== undefined) ? gps.lat : info.lat
+  const gpsLon = (gps.lon !== undefined) ? gps.lon : info.lon
+  const gpsAlt = (gps.alt !== undefined) ? gps.alt : info.alt
+  const goal = goalDrafts[id]
+  let goalLine = ['goal_status', '-']
+  if (goal && info.lat !== undefined && info.lon !== undefined) {
+    const d = haversineMeters(info.lat, info.lon, goal.lat, goal.lon)
+    goalLine = ['goal_status', d <= 3.0 ? 'reached' : 'flying']
+  }
+  const lines = [
+    goalLine,
+    ['armed', info.armed],
+    ['nav_state', vs.nav_state],
+    ['arming_state', vs.arming_state],
+    ['failsafe', vs.failsafe],
+    ['pre_flight_checks_pass', vs.pre_flight_checks_pass],
+    ['control_offboard', vcm.flag_control_offboard_enabled],
+    ['control_auto', vcm.flag_control_auto_enabled],
+    ['control_manual', vcm.flag_control_manual_enabled],
+    ['battery_voltage_v', batt.voltage_v],
+    ['battery_current_a', batt.current_a],
+    ['battery_remaining', batt.remaining],
+    ['gps_lat', gpsLat],
+    ['gps_lon', gpsLon],
+    ['gps_alt', gpsAlt],
+    ['gps_fix_type', gps.fix_type],
+    ['gps_satellites_used', gps.satellites_used],
+    ['landed', land.landed],
+    ['maybe_landed', land.maybe_landed],
+    ['freefall', land.freefall],
+    ['takeoff_state', takeoff.takeoff_state],
+  ]
+  panel.innerHTML = lines.map(([k, v]) => {
+    const val = (v === undefined || v === null || v === '') ? '-' : v
+    const cls = (k === 'goal_status' && val === 'reached') ? 'status-good' : ''
+    return `<div class="${cls}"><strong>${k}</strong>: ${val}</div>`
+  }).join('')
 }
 
 document.addEventListener('click', function (e) {

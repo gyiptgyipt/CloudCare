@@ -36,6 +36,36 @@ try:
     except Exception:
         VehicleGlobalPosition = None
         HAS_GLOBAL_POS = False
+    try:
+        from px4_msgs.msg import VehicleControlMode
+        HAS_VEHICLE_CONTROL_MODE = True
+    except Exception:
+        VehicleControlMode = None
+        HAS_VEHICLE_CONTROL_MODE = False
+    try:
+        from px4_msgs.msg import BatteryStatus
+        HAS_BATTERY_STATUS = True
+    except Exception:
+        BatteryStatus = None
+        HAS_BATTERY_STATUS = False
+    try:
+        from px4_msgs.msg import VehicleGpsPosition
+        HAS_VEHICLE_GPS_POSITION = True
+    except Exception:
+        VehicleGpsPosition = None
+        HAS_VEHICLE_GPS_POSITION = False
+    try:
+        from px4_msgs.msg import VehicleLandDetected
+        HAS_VEHICLE_LAND_DETECTED = True
+    except Exception:
+        VehicleLandDetected = None
+        HAS_VEHICLE_LAND_DETECTED = False
+    try:
+        from px4_msgs.msg import TakeoffStatus
+        HAS_TAKEOFF_STATUS = True
+    except Exception:
+        TakeoffStatus = None
+        HAS_TAKEOFF_STATUS = False
 except Exception as e:
     log.error('rclpy or px4_msgs not available: %s', e)
     raise
@@ -96,12 +126,24 @@ class WebControl(Node):
         self.local_positions = {i: [0.0, 0.0, 0.0] for i in range(1, self.num_drones + 1)}
         # global positions (lat, lon, alt)
         self.global_positions = {i: None for i in range(1, self.num_drones + 1)}
+        self.home_positions = {i: None for i in range(1, self.num_drones + 1)}
+        # extra status info
+        self.vehicle_status = {i: None for i in range(1, self.num_drones + 1)}
+        self.vehicle_control_mode = {i: None for i in range(1, self.num_drones + 1)}
+        self.battery_status = {i: None for i in range(1, self.num_drones + 1)}
+        self.vehicle_gps_position = {i: None for i in range(1, self.num_drones + 1)}
+        self.vehicle_land_detected = {i: None for i in range(1, self.num_drones + 1)}
+        self.takeoff_status = {i: None for i in range(1, self.num_drones + 1)}
 
         # manual target storage: when a Fly button is pressed, we store the
         # requested position here and publish it for a short duration so PX4
         # receives a stream of setpoints for that drone.
         self.manual_targets = {i: None for i in range(1, self.num_drones + 1)}
         self.manual_target_counters = {i: 0 for i in range(1, self.num_drones + 1)}
+        # teleop velocity command (vx, vy, vz) and expiry
+        self.teleop_cmd = {i: [0.0, 0.0, 0.0] for i in range(1, self.num_drones + 1)}
+        self.teleop_until = {i: 0.0 for i in range(1, self.num_drones + 1)}
+        self.manual_mode = {i: False for i in range(1, self.num_drones + 1)}
         # duration to publish manual target (seconds)
         # use a longer default so PX4 has time to accept the streamed setpoints
         self.manual_target_duration_s = float(cfg.get('manual_target_duration_s', 8.0))
@@ -156,6 +198,8 @@ class WebControl(Node):
                                 lat = lat / 1e7
                                 lon = lon / 1e7
                             self.global_positions[idx] = [lat, lon, alt]
+                            if self.home_positions.get(idx) is None:
+                                self.home_positions[idx] = [lat, lon, alt]
                         except Exception:
                             pass
                     return gcb
@@ -163,6 +207,103 @@ class WebControl(Node):
                 self.global_subs[i] = self.create_subscription(
                     VehicleGlobalPosition, f'/px4_{i}/fmu/out/vehicle_global_position', make_gcb(i), qos
                 )
+
+            qos = QoSProfile(depth=1)
+            qos.reliability = ReliabilityPolicy.BEST_EFFORT
+            qos.durability = DurabilityPolicy.VOLATILE
+            qos.history = HistoryPolicy.KEEP_LAST
+
+            def make_status_cb(idx):
+                def scb(msg):
+                    try:
+                        self.vehicle_status[idx] = {
+                            'nav_state': int(getattr(msg, 'nav_state', -1)),
+                            'arming_state': int(getattr(msg, 'arming_state', -1)),
+                            'failsafe': bool(getattr(msg, 'failsafe', False)),
+                            'pre_flight_checks_pass': bool(getattr(msg, 'pre_flight_checks_pass', False)),
+                        }
+                    except Exception:
+                        pass
+                return scb
+
+            def make_ctrl_cb(idx):
+                def ccb(msg):
+                    try:
+                        self.vehicle_control_mode[idx] = {
+                            'flag_armed': bool(getattr(msg, 'flag_armed', False)),
+                            'flag_control_manual_enabled': bool(getattr(msg, 'flag_control_manual_enabled', False)),
+                            'flag_control_offboard_enabled': bool(getattr(msg, 'flag_control_offboard_enabled', False)),
+                            'flag_control_auto_enabled': bool(getattr(msg, 'flag_control_auto_enabled', False)),
+                        }
+                    except Exception:
+                        pass
+                return ccb
+
+            def make_batt_cb(idx):
+                def bcb(msg):
+                    try:
+                        self.battery_status[idx] = {
+                            'voltage_v': float(getattr(msg, 'voltage_v', 0.0)),
+                            'current_a': float(getattr(msg, 'current_a', 0.0)),
+                            'remaining': float(getattr(msg, 'remaining', -1.0)),
+                        }
+                    except Exception:
+                        pass
+                return bcb
+
+            def make_gps_cb(idx):
+                def gpcb(msg):
+                    try:
+                        lat = float(getattr(msg, 'lat', 0.0))
+                        lon = float(getattr(msg, 'lon', 0.0))
+                        alt = float(getattr(msg, 'alt', 0.0))
+                        if abs(lat) > 180.0 or abs(lon) > 180.0:
+                            lat = lat / 1e7
+                            lon = lon / 1e7
+                        self.vehicle_gps_position[idx] = {
+                            'lat': lat,
+                            'lon': lon,
+                            'alt': alt,
+                            'fix_type': int(getattr(msg, 'fix_type', -1)),
+                            'satellites_used': int(getattr(msg, 'satellites_used', -1)),
+                        }
+                    except Exception:
+                        pass
+                return gpcb
+
+            def make_land_cb(idx):
+                def lcb(msg):
+                    try:
+                        self.vehicle_land_detected[idx] = {
+                            'landed': bool(getattr(msg, 'landed', False)),
+                            'freefall': bool(getattr(msg, 'freefall', False)),
+                            'maybe_landed': bool(getattr(msg, 'maybe_landed', False)),
+                        }
+                    except Exception:
+                        pass
+                return lcb
+
+            def make_takeoff_cb(idx):
+                def tcb(msg):
+                    try:
+                        self.takeoff_status[idx] = {
+                            'takeoff_state': int(getattr(msg, 'takeoff_state', -1)),
+                        }
+                    except Exception:
+                        pass
+                return tcb
+
+            self.create_subscription(VehicleStatus, f'/px4_{i}/fmu/out/vehicle_status', make_status_cb(i), qos)
+            if HAS_VEHICLE_CONTROL_MODE and VehicleControlMode is not None:
+                self.create_subscription(VehicleControlMode, f'/px4_{i}/fmu/out/vehicle_control_mode', make_ctrl_cb(i), qos)
+            if HAS_BATTERY_STATUS and BatteryStatus is not None:
+                self.create_subscription(BatteryStatus, f'/px4_{i}/fmu/out/battery_status', make_batt_cb(i), qos)
+            if HAS_VEHICLE_GPS_POSITION and VehicleGpsPosition is not None:
+                self.create_subscription(VehicleGpsPosition, f'/px4_{i}/fmu/out/vehicle_gps_position', make_gps_cb(i), qos)
+            if HAS_VEHICLE_LAND_DETECTED and VehicleLandDetected is not None:
+                self.create_subscription(VehicleLandDetected, f'/px4_{i}/fmu/out/vehicle_land_detected', make_land_cb(i), qos)
+            if HAS_TAKEOFF_STATUS and TakeoffStatus is not None:
+                self.create_subscription(TakeoffStatus, f'/px4_{i}/fmu/out/takeoff_status', make_takeoff_cb(i), qos)
 
             # subscribe to ActuatorArmed or VehicleStatus if available so we
             # can reflect the real armed state (PX4 may reject disarm while
@@ -186,11 +327,11 @@ class WebControl(Node):
                     return acb
 
                 # ActuatorArmed topic (preferred)
-                self.create_subscription(ActuatorArmed, f'/px4_{i}/fmu/out/actuator_armed', make_armed_cb(i), 10)
+                self.create_subscription(ActuatorArmed, f'/px4_{i}/fmu/out/actuator_armed', make_armed_cb(i), qos)
             except Exception:
                 try:
                     # fallback to VehicleStatus
-                    self.create_subscription(VehicleStatus, f'/px4_{i}/fmu/out/vehicle_status', make_armed_cb(i), 10)
+                    self.create_subscription(VehicleStatus, f'/px4_{i}/fmu/out/vehicle_status', make_armed_cb(i), qos)
                 except Exception:
                     # no status subscriptions available; continue
                     pass
@@ -214,6 +355,13 @@ class WebControl(Node):
     def _timer_cb(self):
         # publish offboard control mode and trajectory setpoints
         for i in range(1, self.num_drones + 1):
+            # if manual mode, publish velocity setpoint (teleop or zero) and skip position stream
+            if self.manual_mode.get(i, False):
+                self._publish_offboard_mode_pos_vel(i)
+                vx, vy, z_hold = self.teleop_cmd.get(i, [0.0, 0.0, 0.0])
+                self._publish_velocity_hold_z(i, vx, vy, z_hold, 0.0)
+                continue
+
             self._publish_offboard_mode(i)
 
             # until we have sent enough initial setpoints, publish an altitude hold
@@ -274,9 +422,45 @@ class WebControl(Node):
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.offboard_pubs[idx].publish(msg)
 
+    def _publish_offboard_mode_velocity(self, idx):
+        msg = OffboardControlMode()
+        msg.position = False
+        msg.velocity = True
+        msg.acceleration = False
+        msg.attitude = False
+        msg.body_rate = False
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.offboard_pubs[idx].publish(msg)
+
+    def _publish_offboard_mode_pos_vel(self, idx):
+        msg = OffboardControlMode()
+        msg.position = True
+        msg.velocity = True
+        msg.acceleration = False
+        msg.attitude = False
+        msg.body_rate = False
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.offboard_pubs[idx].publish(msg)
+
     def _publish_trajectory(self, idx, x, y, z, yaw):
         msg = TrajectorySetpoint()
         msg.position = [float(x), float(y), float(z)]
+        msg.yaw = float(yaw)
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.traj_pubs[idx].publish(msg)
+
+    def _publish_velocity(self, idx, vx, vy, vz, yaw=0.0):
+        msg = TrajectorySetpoint()
+        msg.position = [float('nan'), float('nan'), float('nan')]
+        msg.velocity = [float(vx), float(vy), float(vz)]
+        msg.yaw = float(yaw)
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.traj_pubs[idx].publish(msg)
+
+    def _publish_velocity_hold_z(self, idx, vx, vy, z, yaw=0.0):
+        msg = TrajectorySetpoint()
+        msg.position = [float('nan'), float('nan'), float(z)]
+        msg.velocity = [float(vx), float(vy), float('nan')]
         msg.yaw = float(yaw)
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.traj_pubs[idx].publish(msg)
@@ -426,6 +610,41 @@ class WebControl(Node):
         # if PX4 didn't report disarmed, leave local flag as-is (reflects actual state)
         return False
 
+    def force_disarm(self, idx):
+        # force disarm using MAV_CMD_COMPONENT_ARM_DISARM param2=21196
+        try:
+            i = int(idx)
+        except Exception:
+            raise ValueError('invalid idx for force disarm')
+
+        pub = self.cmd_pubs.get(i)
+        if pub is None:
+            raise KeyError(f'No vehicle_command publisher for idx {i}')
+
+        repeat = 5
+        targets = [i, 1, 0]
+        for tgt in targets:
+            for attempt in range(repeat):
+                try:
+                    msg = VehicleCommand()
+                    msg.param1 = float(0.0)
+                    msg.param2 = float(21196.0)
+                    msg.command = int(400)
+                    msg.target_system = int(tgt)
+                    msg.target_component = 1
+                    msg.source_system = 1
+                    msg.source_component = 1
+                    msg.from_external = True
+                    msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+                    pub.publish(msg)
+                    log.debug('force disarm publish attempt %d for px4_%d via target %s', attempt + 1, i, tgt)
+                except Exception:
+                    log.exception('failed force disarm to %d (attempt %d) via target %s', i, attempt + 1, tgt)
+            time.sleep(0.15)
+
+        log.info('force_disarm() attempted to %d via targets %s', i, targets)
+        return True
+
     def offboard(self, idx):
         # set offboard mode
         # VEHICLE_CMD_DO_SET_MODE = 176 (in PX4) but existing C++ used a combo; we'll send DO_SET_MODE=176 param1:1 param2:6
@@ -446,6 +665,32 @@ class WebControl(Node):
         self.manual_targets[i] = [float(position[0]), float(position[1]), float(position[2])] + ([float(position[3])] if len(position) > 3 else [])
         self.manual_target_counters[i] = int(self.publish_hz * self.manual_target_duration_s)
         log.info('fly() queued for %d -> %s (publishing for %d cycles)', i, self.manual_targets[i], self.manual_target_counters[i])
+
+    def teleop_velocity(self, idx, vx, vy, z_hold):
+        try:
+            i = int(idx)
+        except Exception:
+            raise ValueError('invalid idx for teleop')
+        self.manual_mode[i] = True
+        self.teleop_cmd[i] = [float(vx), float(vy), float(z_hold)]
+        self.teleop_until[i] = time.time() + 0.6
+        self._publish_offboard_mode_pos_vel(i)
+        self._publish_velocity_hold_z(i, vx, vy, z_hold, 0.0)
+        log.debug('teleop_velocity to %d: vx=%.2f vy=%.2f z=%.2f', i, vx, vy, z_hold)
+
+    def set_manual_mode(self, idx, enabled):
+        try:
+            i = int(idx)
+        except Exception:
+            raise ValueError('invalid idx for manual mode')
+        self.manual_mode[i] = bool(enabled)
+        if not enabled:
+            self.teleop_until[i] = 0.0
+            self.teleop_cmd[i] = [0.0, 0.0, 0.0]
+        # clear any pending position targets when entering manual
+        if enabled:
+            self.manual_targets[i] = None
+            self.manual_target_counters[i] = 0
 
     def send_global_setpoint(self, idx, lat, lon, alt=None, yaw=0.0):
         try:
@@ -546,6 +791,12 @@ class WebControl(Node):
                 'manual_target_cycles': int(self.manual_target_counters.get(i, 0)),
                 'local_position': list(self.local_positions.get(i, [0.0, 0.0, 0.0])),
                 'global_position': self.global_positions.get(i),
+                'vehicle_status': self.vehicle_status.get(i),
+                'vehicle_control_mode': self.vehicle_control_mode.get(i),
+                'battery_status': self.battery_status.get(i),
+                'vehicle_gps_position': self.vehicle_gps_position.get(i),
+                'vehicle_land_detected': self.vehicle_land_detected.get(i),
+                'takeoff_status': self.takeoff_status.get(i),
             }
         return status
 
@@ -555,6 +806,13 @@ class WebControl(Node):
         except Exception:
             return None
         return self.global_positions.get(i)
+
+    def get_home_position(self, idx):
+        try:
+            i = int(idx)
+        except Exception:
+            return None
+        return self.home_positions.get(i)
 
     def get_local_position(self, idx):
         try:
@@ -605,6 +863,18 @@ def fly_uav(uav_idx, position):
     c.fly(idx, position)
 
 
+def teleop_velocity_uav(uav_idx, vx, vy, z_hold):
+    c = start_controller()
+    idx = int(uav_idx)
+    c.teleop_velocity(idx, vx, vy, z_hold)
+
+
+def set_manual_mode_uav(uav_idx, enabled):
+    c = start_controller()
+    idx = int(uav_idx)
+    c.set_manual_mode(idx, enabled)
+
+
 def land_uav(uav_idx):
     c = start_controller()
     idx = int(uav_idx)
@@ -617,6 +887,12 @@ def disarm_uav(uav_idx):
     return c.disarm(idx)
 
 
+def force_disarm_uav(uav_idx):
+    c = start_controller()
+    idx = int(uav_idx)
+    return c.force_disarm(idx)
+
+
 def global_setpoint_uav(uav_idx, lat, lon, alt=None, yaw=0.0):
     c = start_controller()
     idx = int(uav_idx)
@@ -627,6 +903,12 @@ def get_global_position_uav(uav_idx):
     c = start_controller()
     idx = int(uav_idx)
     return c.get_global_position(idx)
+
+
+def get_home_position_uav(uav_idx):
+    c = start_controller()
+    idx = int(uav_idx)
+    return c.get_home_position(idx)
 
 
 def get_local_position_uav(uav_idx):

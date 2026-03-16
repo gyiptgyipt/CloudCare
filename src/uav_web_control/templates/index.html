@@ -39,15 +39,30 @@
       button.draft-btn{background:#f59e0b}
       button.fly-btn{background:#22c55e}
       button.disarm-btn{background:#94a3b8;color:#0f172a}
+      button.force-disarm-btn{background:#ef4444}
       button.max-btn{background:#64748b}
       .badges{display:flex;gap:8px;align-items:center;margin-top:6px}
       .badge{padding:6px 8px;border-radius:999px;background:rgba(255,255,255,0.03);color:var(--muted);font-size:12px}
       .badge.small{padding:4px 6px;font-size:11px}
+      .badge.good{background:rgba(34,197,94,0.2);color:#22c55e}
       .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);display:none;align-items:center;justify-content:center;z-index:9999}
       .modal{width:90vw;height:85vh;background:var(--bg);border:1px solid rgba(255,255,255,0.04);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px}
       .modal-header{display:flex;align-items:center;justify-content:space-between}
       .modal-body{display:grid;grid-template-columns:1.6fr 1fr;gap:12px;flex:1;min-height:0}
       .modal-map{width:100%;height:100%;border-radius:8px;background:#0b0b12;border:1px solid rgba(255,255,255,0.04)}
+      .status-panel{font-size:12px;color:var(--text);background:rgba(255,255,255,0.03);border-radius:8px;padding:8px;max-height:260px;overflow:auto}
+      .status-good{color:#22c55e}
+      .teleop{display:flex;gap:10px;align-items:flex-start}
+      .teleop-footer{display:flex;gap:12px;align-items:center;justify-content:flex-start;background:rgba(255,255,255,0.03);border-radius:10px;padding:10px}
+      .joy-area{width:220px;height:220px;border-radius:12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);position:relative;touch-action:none}
+      .joy-knob{width:64px;height:64px;border-radius:50%;background:#22c55e;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);box-shadow:0 6px 18px rgba(0,0,0,0.35)}
+      .teleop-meta{display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--text)}
+      .teleop-meta input{width:160px}
+      .toggle{display:flex;align-items:center;gap:8px;font-size:12px}
+      .toggle input{width:36px;height:20px;appearance:none;background:#334155;border-radius:999px;position:relative;outline:none;cursor:pointer}
+      .toggle input:checked{background:#22c55e}
+      .toggle input:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:transform .15s ease}
+      .toggle input:checked:before{transform:translateX(16px)}
     </style>
   </head>
   <body>
@@ -83,6 +98,8 @@
                       <button class="fly-btn" data-id="{{ id }}">Execute</button>
                       <button class="arm-btn" data-id="{{ id }}">Offboard</button>
                       <button class="disarm-btn" data-id="{{ id }}">Disarm</button>
+                      <button class="force-disarm-btn" data-id="{{ id }}">Force Disarm</button>
+                      <button class="home-btn" data-id="{{ id }}">Go Home</button>
                       <button class="land-btn" data-id="{{ id }}">Land</button>
                     </div>
                   </div>
@@ -91,7 +108,7 @@
                 <div class="badges">
                   <div class="badge" id="status-{{ id }}">ready</div>
                   <div class="badge small" id="arm-status-{{ id }}">idle</div>
-                  <div class="badge small" id="disarm-status-{{ id }}">idle</div>
+                  <div class="badge small" id="goal-status-{{ id }}">idle</div>
                   <div class="badge small" id="land-status-{{ id }}">idle</div>
                 </div>
               </div>
@@ -116,6 +133,7 @@
           <button id="uav-calibrate-btn" class="draft-btn">Calibrate Map</button>
           <div class="badge small" id="uav-calibrate-status">not calibrated</div>
         </div>
+        <div id="uav-teleop-footer" class="teleop-footer"></div>
       </div>
     </div>
 
