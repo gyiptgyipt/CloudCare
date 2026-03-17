@@ -396,6 +396,18 @@ function openModalFor(id) {
   statusPanel.textContent = 'status loading...'
   controlsEl.appendChild(statusPanel)
 
+  const bottomActions = document.createElement('div')
+  bottomActions.id = 'uav-modal-bottom-actions'
+  bottomActions.className = 'controls'
+  // Move Disarm, Force Disarm, Land to bottom
+  const disarmBtn = controlsEl.querySelector('.disarm-btn')
+  const forceDisarmBtn = controlsEl.querySelector('.force-disarm-btn')
+  const landBtn = controlsEl.querySelector('.land-btn')
+  if (disarmBtn) bottomActions.appendChild(disarmBtn)
+  if (forceDisarmBtn) bottomActions.appendChild(forceDisarmBtn)
+  if (landBtn) bottomActions.appendChild(landBtn)
+  controlsEl.appendChild(bottomActions)
+
   const teleopWrap = document.createElement('div')
   teleopWrap.id = 'uav-teleop'
   teleopWrap.className = 'teleop'

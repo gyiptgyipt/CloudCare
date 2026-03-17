@@ -26,14 +26,17 @@
       .card-title{font-weight:600}
       .card-sub{font-size:12px;color:var(--muted)}
       .card-body{display:flex;flex-direction:column;gap:8px}
-      .gps-row{display:grid;grid-template-columns:1.4fr 1fr;gap:8px;align-items:stretch}
+      .gps-row{display:grid;grid-template-columns:1.6fr 0.4fr;gap:8px;align-items:stretch}
+      .gps-stack{display:flex;flex-direction:column;gap:8px}
       .gps-map{height:150px;border-radius:8px;background:#0b0b12;border:1px solid rgba(255,255,255,0.04)}
       .gps-controls{display:flex;flex-direction:column;gap:8px}
       .card-actions{display:flex;justify-content:flex-end}
       .geo-inputs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
       .geo-inputs input{width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:var(--card);color:var(--text);outline:none}
       .controls{display:flex;gap:6px;flex-wrap:wrap}
-      button{cursor:pointer;padding:6px 8px;border-radius:6px;border:none;background:var(--accent);color:white;font-weight:600}
+      .card .controls{display:none}
+      button{cursor:pointer;padding:12px 16px;border-radius:8px;border:none;background:var(--accent);color:white;font-weight:600;font-size:14px}
+      .modal .controls button{font-size:20px;min-width:52px;min-height:44px;padding:14px 18px}
       button.land-btn{background:#ef4444}
       button.arm-btn{background:#06b6d4}
       button.draft-btn{background:#f59e0b}
@@ -41,7 +44,7 @@
       button.disarm-btn{background:#94a3b8;color:#0f172a}
       button.force-disarm-btn{background:#ef4444}
       button.max-btn{background:#64748b}
-      .badges{display:flex;gap:8px;align-items:center;margin-top:6px}
+      .badges{display:flex;gap:8px;align-items:flex-start;margin-top:6px;flex-direction:column}
       .badge{padding:6px 8px;border-radius:999px;background:rgba(255,255,255,0.03);color:var(--muted);font-size:12px}
       .badge.small{padding:4px 6px;font-size:11px}
       .badge.good{background:rgba(34,197,94,0.2);color:#22c55e}
@@ -55,7 +58,7 @@
       .teleop{display:flex;gap:10px;align-items:flex-start}
       .teleop-footer{display:flex;gap:12px;align-items:center;justify-content:flex-start;background:rgba(255,255,255,0.03);border-radius:10px;padding:10px}
       .joy-area{width:220px;height:220px;border-radius:12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);position:relative;touch-action:none}
-      .joy-knob{width:64px;height:64px;border-radius:50%;background:#22c55e;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);box-shadow:0 6px 18px rgba(0,0,0,0.35)}
+      .joy-knob{width:64px;height:64px;border-radius:50%;background:#656967;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);box-shadow:0 6px 18px rgba(0,0,0,0.35)}
       .teleop-meta{display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--text)}
       .teleop-meta input{width:160px}
       .toggle{display:flex;align-items:center;gap:8px;font-size:12px}
@@ -69,47 +72,50 @@
     <header class="app-header">
       <!-- <img src="/logo.png" alt="CloudCare" class="brand-logo" /> -->
       <img src="/logo.png" alt="CloudCare" class="brand-logo" width="250" height="250">
-      <h1>Cloud Care UAVs Web Fleet System</h1>
+      <h1>Cloud Care UAVs Web  Management System</h1>
     </header>
     <div id="uav-list" class="grid-container">
       {% if uavs %}
         {% for id, info in uavs.items() %}
             <div class="card" id="card-{{ id }}">
               <div class="card-header">
-                <div class="card-title">{{ info.name or id }}</div>
-                <div class="card-sub">{{ id }}</div>
+                <div style="display:flex;align-items:baseline;gap:6px">
+                  <div class="card-title">{{ info.name or id }}</div>
+                  <div class="card-sub">{{ id }}</div>
+                </div>
+                <div class="card-actions">
+                  <button class="max-btn" data-id="{{ id }}">Open Mission</button>
+                </div>
               </div>  
 
               <div class="card-body">
-                <div class="card-actions">
-                  <button class="max-btn" data-id="{{ id }}">Maximize</button>
-                </div>
                 <div class="gps-row">
-                  <div class="gps-map" id="gps-{{ id }}" data-id="{{ id }}"></div>
-                  <div class="gps-controls">
-                    <div class="geo-inputs">
-                      <input class="geo-lat" data-id="{{ id }}" type="number" step="0.000001" placeholder="Lat" />
-                      <input class="geo-lon" data-id="{{ id }}" type="number" step="0.000001" placeholder="Lon" />
-                      <input class="geo-alt-ft" data-id="{{ id }}" type="number" step="0.1" placeholder="Alt (ft)" value="20" />
-                    </div>
+                  <div class="gps-stack">
+                    <div class="gps-map" id="gps-{{ id }}" data-id="{{ id }}"></div>
+                    <div class="gps-controls">
+                      <div class="geo-inputs">
+                        <input class="geo-lat" data-id="{{ id }}" type="number" step="0.000001" placeholder="Lat" />
+                        <input class="geo-lon" data-id="{{ id }}" type="number" step="0.000001" placeholder="Lon" />
+                        <input class="geo-alt-ft" data-id="{{ id }}" type="number" step="0.1" placeholder="Alt (ft)" value="20" />
+                      </div>
 
-                    <div class="controls">
-                      <button class="draft-btn" data-id="{{ id }}">Draft Goal</button>
-                      <button class="fly-btn" data-id="{{ id }}">Execute</button>
-                      <button class="arm-btn" data-id="{{ id }}">Offboard</button>
-                      <button class="disarm-btn" data-id="{{ id }}">Disarm</button>
-                      <button class="force-disarm-btn" data-id="{{ id }}">Force Disarm</button>
-                      <button class="home-btn" data-id="{{ id }}">Go Home</button>
-                      <button class="land-btn" data-id="{{ id }}">Land</button>
+                      <div class="controls">
+                        <!-- <button class="draft-btn" data-id="{{ id }}">Draft Goal</button> -->
+                        <button class="arm-btn" data-id="{{ id }}" title="Offboard">&#8593;</button>
+                        <button class="fly-btn" data-id="{{ id }}" title="Execute">&#9654;</button>
+                        <button class="disarm-btn" data-id="{{ id }}">Disarm</button>
+                        <button class="force-disarm-btn" data-id="{{ id }}">Force Disarm</button>
+                        <button class="home-btn" data-id="{{ id }}" title="Go Home">&#8962;</button>
+                        <button class="land-btn" data-id="{{ id }}">Land</button>
+                      </div>
                     </div>
                   </div>
-                </div>
-
-                <div class="badges">
-                  <div class="badge" id="status-{{ id }}">ready</div>
-                  <div class="badge small" id="arm-status-{{ id }}">idle</div>
-                  <div class="badge small" id="goal-status-{{ id }}">idle</div>
-                  <div class="badge small" id="land-status-{{ id }}">idle</div>
+                  <div class="badges">
+                    <div class="badge" id="status-{{ id }}">ready</div>
+                    <div class="badge small" id="arm-status-{{ id }}">idle</div>
+                    <div class="badge small" id="goal-status-{{ id }}">idle</div>
+                    <div class="badge small" id="land-status-{{ id }}">idle</div>
+                  </div>
                 </div>
               </div>
             </div>
