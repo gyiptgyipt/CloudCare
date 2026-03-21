@@ -1,2 +1,3 @@
 Flask>=2.0
 PyYAML>=5.4
+roslibpy>=1.5.0

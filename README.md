@@ -33,10 +33,9 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# In the same terminal, source ROS2 so px4_msgs are available
-# Example (pick one that matches your install):
-# source /opt/ros/foxy/setup.bash
-# source /opt/ros/humble/setup.bash
+# Start rosbridge websocket (default port 9090)
+# Example:
+# ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 
 export FLASK_APP=app.py
 flask run --host=0.0.0.0
@@ -45,9 +44,12 @@ flask run --host=0.0.0.0
 Open:
 - `http://localhost:5000`
 
-If ROS2 + `px4_msgs` are available, the web server publishes with `rclpy`. Otherwise, it falls back to `ros2` CLI publishing.
+The web server publishes and subscribes via rosbridge websocket.
 
-in future version, I will use rosbridge for the non ros native devices.
+Optional env vars:
+- `ROSBRIDGE_HOST` (default `localhost`)
+- `ROSBRIDGE_PORT` (default `9090`)
+- `ROSBRIDGE_USE_SSL` (`true`/`false`)
 
 ## Simulation Cases (Initial Poses + Setpoints)
 "Cases" live in the configuration files that define spawn locations and mission setpoints.
@@ -93,8 +95,8 @@ Notes:
 - Goals are adjusted automatically using the calibration offset.
 
 ## Arm / Offboard Notes
-- The **Arm** button publishes a ROS2 `px4_msgs/msg/VehicleCommand` to `/px4_<id>/fmu/in/vehicle_command`.
-- Run the web app from a terminal where ROS2 is sourced.
+- The **Arm** button publishes a `px4_msgs/msg/VehicleCommand` via rosbridge to `/px4_<id>/fmu/in/vehicle_command`.
+- Ensure rosbridge websocket is running and accessible.
 
 ## Repo Layout
 - `src/mytmux/multi_tmux/.tmuxinator.yml`: tmux launcher

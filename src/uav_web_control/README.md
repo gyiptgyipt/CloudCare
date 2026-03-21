@@ -24,5 +24,10 @@ flask run --host=0.0.0.0
 python app.py
 ```
 
-3. Open `http://localhost:5000` and click a UAV's "Fly" button.
+3. Start rosbridge websocket (default port 9090):
 
+```bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+```
+
+4. Open `http://localhost:5000` and click a UAV's "Fly" button.
