@@ -1,5 +1,9 @@
 # CloudCare (Multi-UAV Simulation + Web Control)
 
+
+![example_web](/images/example_web.png)
+![preview](/images/preview.png)
+
 CloudCare is a local simulation setup for running multiple PX4 SITL drones and controlling them from a Flask web UI. This repo focuses on:
 - A **tmux-based simulator launcher** (mytmux)
 - A **web control server** (uav_web_control)
