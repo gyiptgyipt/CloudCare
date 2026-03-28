@@ -6,6 +6,8 @@ const mapOffsets = {}
 let teleopInterval = null
 let teleopState = null
 const manualMode = {}
+let bridgePolling = null
+let bridgeInitialized = false
 
 function getInputEl(id, selector) {
   if (activeModalId === id) {
@@ -308,6 +310,83 @@ function pollStatus() {
 setInterval(pollStatus, 2000)
 // run once immediately
 pollStatus()
+
+function updateBridgeUI(data) {
+  const hostEl = document.getElementById('bridge-host')
+  const portEl = document.getElementById('bridge-port')
+  const sslEl = document.getElementById('bridge-ssl')
+  const statusEl = document.getElementById('bridge-status')
+  const alertEl = document.getElementById('bridge-alert')
+
+  if (!bridgeInitialized) {
+    if (hostEl && data.host) hostEl.value = data.host
+    if (portEl && data.port) portEl.value = data.port
+    if (sslEl) sslEl.checked = !!data.ssl
+    bridgeInitialized = true
+  }
+
+  if (statusEl) {
+    statusEl.textContent = data.connected ? 'connected' : 'disconnected'
+    statusEl.classList.toggle('good', !!data.connected)
+    statusEl.classList.toggle('bad', !data.connected)
+  }
+  if (alertEl) {
+    if (data.connected) {
+      alertEl.style.display = 'none'
+    } else {
+      const msg = data.error ? `Bridge disconnected: ${data.error}` : 'Bridge disconnected. Check IP/port and network.'
+      alertEl.textContent = msg
+      alertEl.style.display = 'block'
+    }
+  }
+}
+
+function pollBridge() {
+  fetch('/bridge/status?probe=1').then(r => r.json()).then(data => {
+    if (data.status === 'ok') {
+      updateBridgeUI(data)
+    }
+  }).catch(() => {
+    updateBridgeUI({ connected: false, error: 'network error' })
+  })
+}
+
+function connectBridge() {
+  const hostEl = document.getElementById('bridge-host')
+  const portEl = document.getElementById('bridge-port')
+  const sslEl = document.getElementById('bridge-ssl')
+  const host = hostEl ? hostEl.value.trim() : ''
+  const port = portEl ? portEl.value.trim() : ''
+  const ssl = sslEl ? sslEl.checked : false
+  if (!host || !port) {
+    updateBridgeUI({ connected: false, error: 'missing host or port' })
+    return
+  }
+  fetch('/bridge/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ host, port, ssl, connect: true })
+  }).then(r => r.json()).then(data => {
+    if (data.status === 'ok') {
+      updateBridgeUI(data)
+    } else {
+      updateBridgeUI({ connected: false, error: data.message || 'bridge error' })
+    }
+  }).catch(() => {
+    updateBridgeUI({ connected: false, error: 'network error' })
+  })
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  const connectBtn = document.getElementById('bridge-connect')
+  if (connectBtn) {
+    connectBtn.addEventListener('click', connectBridge)
+  }
+  pollBridge()
+  if (!bridgePolling) {
+    bridgePolling = setInterval(pollBridge, 3000)
+  }
+})
 
 function ensureMap(id, lat, lon) {
   const state = mapStates[id]

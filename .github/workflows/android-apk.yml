@@ -3,7 +3,8 @@ name: Build Android APK (WebView Wrapper)
 on:
   workflow_dispatch:
   push:
-    branches: ["main"]
+    tags:
+      - "v*"
 
 env:
   FLASK_BASE_URL: "https://YOUR-SERVER.example.com"
@@ -42,23 +43,132 @@ jobs:
               <meta charset="utf-8" />
               <meta name="viewport" content="width=device-width, initial-scale=1" />
               <title>UAV Web Control</title>
+              <style>
+                :root {
+                  --bg: #0f172a;
+                  --panel: #111827;
+                  --text: #e5e7eb;
+                  --muted: #94a3b8;
+                  --accent: #22c55e;
+                  --danger: #ef4444;
+                }
+                body {
+                  margin: 0;
+                  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+                  background: radial-gradient(circle at 20% 20%, #1f2937, #0b1020 60%);
+                  color: var(--text);
+                  min-height: 100vh;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  padding: 24px;
+                }
+                .card {
+                  width: 100%;
+                  max-width: 520px;
+                  background: rgba(17, 24, 39, 0.9);
+                  border: 1px solid #1f2937;
+                  border-radius: 16px;
+                  padding: 24px;
+                  box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+                }
+                h1 { font-size: 22px; margin: 0 0 8px; }
+                p { color: var(--muted); margin: 0 0 16px; }
+                label { display: block; margin: 12px 0 6px; }
+                input {
+                  width: 100%;
+                  padding: 12px 14px;
+                  border-radius: 10px;
+                  border: 1px solid #334155;
+                  background: #0b1220;
+                  color: var(--text);
+                  font-size: 16px;
+                }
+                .row { display: flex; gap: 12px; }
+                .row > div { flex: 1; }
+                button {
+                  margin-top: 16px;
+                  width: 100%;
+                  padding: 12px 14px;
+                  border: none;
+                  border-radius: 10px;
+                  background: var(--accent);
+                  color: #0b1020;
+                  font-weight: bold;
+                  font-size: 16px;
+                }
+                .error { color: var(--danger); margin-top: 10px; }
+                .note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+              </style>
               <script>
                 (function () {
-                  var target = "${FLASK_BASE_URL}";
-                  if (!target || target.includes("YOUR-SERVER")) {
-                    document.body.innerHTML =
-                      "<p>Please set FLASK_BASE_URL in the workflow to your hosted Flask URL.</p>";
+                  function go(url) {
+                    if (!/^https?:\/\//i.test(url)) {
+                      url = "http://" + url;
+                    }
+                    window.location.replace(url);
+                  }
+
+                  var saved = localStorage.getItem("uav_base_url");
+                  if (saved) {
+                    go(saved);
                     return;
                   }
-                  window.location.replace(target);
+
+                  var defaultBase = "__FLASK_BASE_URL__";
+                  if (defaultBase && !defaultBase.includes("YOUR-SERVER") && !defaultBase.includes("__FLASK_BASE_URL__")) {
+                    localStorage.setItem("uav_base_url", defaultBase);
+                    go(defaultBase);
+                    return;
+                  }
                 })();
               </script>
             </head>
             <body>
-              <p>Loading...</p>
+              <div class="card">
+                <h1>Connect To UAV Web Control</h1>
+                <p>Enter the laptop IP and Flask port. Example: 192.168.1.50 and 5000</p>
+                <div class="row">
+                  <div>
+                    <label for="ip">Flask Server IP</label>
+                    <input id="ip" placeholder="192.168.1.50" />
+                  </div>
+                  <div>
+                    <label for="port">Port</label>
+                    <input id="port" placeholder="5000" />
+                  </div>
+                </div>
+                <button id="connect">Connect</button>
+                <div id="error" class="error" style="display:none;"></div>
+                <div class="note">Tip: Phone and laptop must be on the same Wi‑Fi.</div>
+              </div>
+              <script>
+                (function () {
+                  var ipEl = document.getElementById("ip");
+                  var portEl = document.getElementById("port");
+                  var errEl = document.getElementById("error");
+
+                  document.getElementById("connect").addEventListener("click", function () {
+                    var ip = (ipEl.value || "").trim();
+                    var port = (portEl.value || "").trim();
+                    if (!ip || !port) {
+                      errEl.textContent = "Please enter both IP and port.";
+                      errEl.style.display = "block";
+                      return;
+                    }
+                    errEl.style.display = "none";
+                    var base = ip + ":" + port;
+                    localStorage.setItem("uav_base_url", base);
+                    window.location.replace("http://" + base);
+                  });
+                })();
+              </script>
             </body>
           </html>
           EOF
+          if [ -n "${FLASK_BASE_URL}" ] && ! echo "${FLASK_BASE_URL}" | grep -q "YOUR-SERVER"; then
+            sed -i "s|__FLASK_BASE_URL__|${FLASK_BASE_URL}|g" cordova_uav/www/index.html
+          fi
 
       - name: Add Android Platform
         run: |
@@ -71,7 +181,14 @@ jobs:
           cordova build android --debug
 
       - name: Upload APK Artifact
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@v4
         with:
           name: uav-web-control-apk
           path: cordova_uav/platforms/android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload APK to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cordova_uav/platforms/android/app/build/outputs/apk/debug/app-debug.apk

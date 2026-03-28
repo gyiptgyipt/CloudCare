@@ -49,6 +49,26 @@ def _ensure_rosbridge():
     return _ros_client
 
 
+def _reset_rosbridge():
+    global _ros_client, _ros_topics, _ros_subs, _ros_subscribed
+    with _ros_lock:
+        if _ros_client is not None:
+            try:
+                _ros_client.terminate()
+            except Exception:
+                pass
+            try:
+                _ros_client.close()
+            except Exception:
+                pass
+        _ros_client = None
+        _ros_topics = {}
+        _ros_subs = {}
+        _ros_subscribed = False
+        for key in list(_ros_cache.keys()):
+            _ros_cache[key]['last_seen'] = 0.0
+
+
 def _get_topic(topic_name, msg_type):
     key = (topic_name, msg_type)
     if key in _ros_topics:
@@ -761,6 +781,81 @@ def status():
         out[f'uav{idx}'] = info
 
     return jsonify({'status': 'ok', 'data': out})
+
+
+@app.route('/bridge/status', methods=['GET'])
+def bridge_status():
+    if roslibpy is None:
+        return jsonify({'status': 'error', 'message': 'roslibpy not installed'}), 500
+
+    error = None
+    connected = False
+    if request.args.get('probe') == '1':
+        try:
+            _ensure_rosbridge()
+        except Exception as e:
+            error = str(e)
+    if _ros_client is not None:
+        try:
+            connected = bool(_ros_client.is_connected)
+        except Exception:
+            connected = False
+    return jsonify({
+        'status': 'ok',
+        'connected': connected,
+        'host': ROSBRIDGE_HOST,
+        'port': ROSBRIDGE_PORT,
+        'ssl': ROSBRIDGE_USE_SSL,
+        'error': error,
+    })
+
+
+@app.route('/bridge/config', methods=['POST'])
+def bridge_config():
+    if roslibpy is None:
+        return jsonify({'status': 'error', 'message': 'roslibpy not installed'}), 500
+    data = request.get_json() or {}
+    host = str(data.get('host', ROSBRIDGE_HOST)).strip()
+    port = data.get('port', ROSBRIDGE_PORT)
+    use_ssl = bool(data.get('ssl', ROSBRIDGE_USE_SSL))
+    connect = bool(data.get('connect', True))
+
+    try:
+        port = int(port)
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'invalid port'}), 400
+    if not host:
+        return jsonify({'status': 'error', 'message': 'invalid host'}), 400
+
+    global ROSBRIDGE_HOST, ROSBRIDGE_PORT, ROSBRIDGE_USE_SSL
+    changed = (host != ROSBRIDGE_HOST) or (port != ROSBRIDGE_PORT) or (use_ssl != ROSBRIDGE_USE_SSL)
+    ROSBRIDGE_HOST = host
+    ROSBRIDGE_PORT = port
+    ROSBRIDGE_USE_SSL = use_ssl
+    if changed:
+        _reset_rosbridge()
+
+    error = None
+    connected = False
+    if connect:
+        try:
+            _ensure_rosbridge()
+        except Exception as e:
+            error = str(e)
+    if _ros_client is not None:
+        try:
+            connected = bool(_ros_client.is_connected)
+        except Exception:
+            connected = False
+    return jsonify({
+        'status': 'ok',
+        'changed': changed,
+        'connected': connected,
+        'host': ROSBRIDGE_HOST,
+        'port': ROSBRIDGE_PORT,
+        'ssl': ROSBRIDGE_USE_SSL,
+        'error': error,
+    })
 
 
 @app.route('/logo.png')

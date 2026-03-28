@@ -66,6 +66,18 @@
       .toggle input:checked{background:#22c55e}
       .toggle input:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:transform .15s ease}
       .toggle input:checked:before{transform:translateX(16px)}
+      .bridge-bar{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin:0 0 18px 0;flex-wrap:wrap}
+      .bridge-bar input{padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);background:var(--card);color:var(--text);outline:none;min-width:120px}
+      .bridge-bar .bridge-title{font-weight:600;color:var(--text)}
+      .bridge-status{min-width:110px;text-align:center}
+      .bridge-status.good{background:rgba(34,197,94,0.2);color:#22c55e}
+      .bridge-status.bad{background:rgba(239,68,68,0.2);color:#ef4444}
+      .bridge-alert{display:none;margin:0 0 18px 0;padding:10px 12px;border-radius:8px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.25);color:#fecaca;font-size:13px}
+      .bridge-toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+      .bridge-toggle input{width:36px;height:20px;appearance:none;background:#334155;border-radius:999px;position:relative;outline:none;cursor:pointer}
+      .bridge-toggle input:checked{background:#22c55e}
+      .bridge-toggle input:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:transform .15s ease}
+      .bridge-toggle input:checked:before{transform:translateX(16px)}
     </style>
   </head>
   <body>
@@ -74,6 +86,18 @@
       <img src="/logo.png" alt="CloudCare" class="brand-logo" width="250" height="250">
       <h1>Cloud Care UAVs Web  Management System</h1>
     </header>
+    <div id="bridge-alert" class="bridge-alert">Bridge disconnected. Check IP/port and network.</div>
+    <div class="bridge-bar">
+      <div class="bridge-title">Bridge</div>
+      <input id="bridge-host" placeholder="rosbridge host" />
+      <input id="bridge-port" placeholder="9090" />
+      <label class="bridge-toggle">
+        <input id="bridge-ssl" type="checkbox" />
+        SSL
+      </label>
+      <button id="bridge-connect">Connect</button>
+      <div id="bridge-status" class="badge bridge-status">unknown</div>
+    </div>
     <div id="uav-list" class="grid-container">
       {% if uavs %}
         {% for id, info in uavs.items() %}
