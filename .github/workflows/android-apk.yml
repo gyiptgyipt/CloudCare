@@ -1,0 +1,77 @@
+name: Build Android APK (WebView Wrapper)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+env:
+  FLASK_BASE_URL: "https://YOUR-SERVER.example.com"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Cordova
+        run: npm install -g cordova
+
+      - name: Create Cordova Project
+        run: |
+          cordova create cordova_uav com.cloudcare.uav UavWebControl
+          cat > cordova_uav/www/index.html <<'EOF'
+          <!doctype html>
+          <html>
+            <head>
+              <meta charset="utf-8" />
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+              <title>UAV Web Control</title>
+              <script>
+                (function () {
+                  var target = "${FLASK_BASE_URL}";
+                  if (!target || target.includes("YOUR-SERVER")) {
+                    document.body.innerHTML =
+                      "<p>Please set FLASK_BASE_URL in the workflow to your hosted Flask URL.</p>";
+                    return;
+                  }
+                  window.location.replace(target);
+                })();
+              </script>
+            </head>
+            <body>
+              <p>Loading...</p>
+            </body>
+          </html>
+          EOF
+
+      - name: Add Android Platform
+        run: |
+          cd cordova_uav
+          cordova platform add android
+
+      - name: Build Debug APK
+        run: |
+          cd cordova_uav
+          cordova build android --debug
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uav-web-control-apk
+          path: cordova_uav/platforms/android/app/build/outputs/apk/debug/app-debug.apk
